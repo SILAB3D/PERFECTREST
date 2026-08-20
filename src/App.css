@@ -1,0 +1,372 @@
+/* Estructura de la aplicación: cabecera, lienzo y navegación inferior. */
+
+.app {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  max-width: 520px;
+  margin: 0 auto;
+  /* Zonas seguras del móvil (notch y barra de gestos). */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+
+.appbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-5) var(--sp-5) var(--sp-3);
+}
+
+.appbar__title { font-size: 1.32rem; font-weight: 750; letter-spacing: -0.03em; }
+.appbar__sub { font-size: 0.78rem; color: var(--text-muted); margin-top: var(--sp-1); }
+
+.appbar__actions { display: flex; gap: var(--sp-2); }
+
+.iconbtn {
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--r-sm);
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  transition: color 0.15s var(--ease), background 0.15s var(--ease);
+}
+
+.iconbtn:hover { color: var(--text); background: var(--surface-hover); }
+.iconbtn[aria-pressed='true'] { color: var(--primary-soft); border-color: var(--primary); }
+
+.screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-5) calc(var(--tabbar-space) + env(safe-area-inset-bottom));
+  animation: rise 0.32s var(--ease);
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* --- Navegación inferior --- */
+.tabbar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  max-width: 520px;
+  margin: 0 auto;
+  padding: var(--sp-2) var(--sp-3) calc(var(--sp-2) + env(safe-area-inset-bottom));
+  background: color-mix(in srgb, var(--bg-elevated) 88%, transparent);
+  backdrop-filter: blur(18px);
+  border-top: 1px solid var(--border-soft);
+}
+
+.tab {
+  /* Base 0 + min-width 0: las cuatro pestañas se reparten el ancho exacto y
+     ninguna estira la barra por llevar una etiqueta más larga. */
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-1);
+  border-radius: var(--r-sm);
+  color: var(--text-faint);
+  font-size: 0.66rem;
+  font-weight: 650;
+  transition: color 0.18s var(--ease);
+}
+
+.tab[aria-current='page'] { color: var(--primary-soft); }
+:root[data-theme='light'] .tab[aria-current='page'] { color: var(--primary); }
+
+.tab__icon { position: relative; font-size: 1.16rem; line-height: 1; }
+
+/* Indicador de sesión pendiente, anclado al icono. */
+.tab__dot {
+  position: absolute;
+  top: -2px;
+  right: -6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--amber);
+  border: 2px solid var(--bg-elevated);
+}
+
+/* --- Tarjeta protagonista de Inicio --- */
+.hero {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--r-lg);
+  padding: var(--sp-6) var(--sp-5);
+  background: linear-gradient(150deg, var(--surface-2), var(--surface));
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+}
+
+.hero::after {
+  content: '';
+  position: absolute;
+  top: -60%;
+  right: -25%;
+  width: 260px;
+  height: 260px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--primary-dim), transparent 68%);
+  pointer-events: none;
+}
+
+.hero__label { font-size: 0.74rem; font-weight: 650; color: var(--text-muted); }
+
+.hero__time {
+  font-size: 3.3rem;
+  font-weight: 750;
+  letter-spacing: -0.045em;
+  line-height: 1;
+  margin: var(--sp-3) 0 var(--sp-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.hero__meta { font-size: 0.84rem; color: var(--text-muted); line-height: 1.55; }
+.hero__row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-4); }
+
+.countdown {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin-top: var(--sp-5);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--border-soft);
+}
+
+.countdown__value {
+  font-size: 1.12rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.countdown__label { font-size: 0.78rem; color: var(--text-muted); }
+
+/* --- Rejillas --- */
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-4); }
+.grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-3); }
+
+@media (max-width: 360px) {
+  .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hero__time { font-size: 2.8rem; }
+}
+
+/* --- Aviso de sesión detectada --- */
+.pending {
+  border: 1.5px solid var(--amber);
+  background: linear-gradient(150deg, var(--amber-dim), var(--surface));
+  border-radius: var(--r-lg);
+  padding: var(--sp-5);
+  animation: rise 0.4s var(--ease);
+}
+
+.pending__actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-4); }
+.pending__actions .btn { flex: 1; }
+
+/* --- Selector de día --- */
+.daypicker { display: flex; gap: var(--sp-1); }
+
+.daypicker__day {
+  flex: 1;
+  aspect-ratio: 1;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  border: 1.5px solid transparent;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  transition: all 0.15s var(--ease);
+}
+
+.daypicker__day:hover { background: var(--surface-hover); }
+
+.daypicker__day[aria-pressed='true'] {
+  border-color: var(--primary);
+  color: var(--primary-soft);
+  background: var(--primary-dim);
+}
+
+:root[data-theme='light'] .daypicker__day[aria-pressed='true'] { color: var(--primary); }
+
+/* --- Resumen semanal de metas --- */
+.weeklist { display: flex; flex-direction: column; }
+
+.weekrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3) 0;
+  font-size: 0.84rem;
+}
+
+.weekrow + .weekrow { border-top: 1px solid var(--border-soft); }
+
+/* El nombre del día cede espacio antes que las horas, que no deben partirse. */
+.weekrow__day {
+  font-weight: 600;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.weekrow__today { color: var(--primary-soft); }
+:root[data-theme='light'] .weekrow__today { color: var(--primary); }
+
+.weekrow__times {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+/* En pantallas muy estrechas la flecha sobra: las dos horas ya se leen como
+   un rango por su color y su orden. */
+@media (max-width: 359px) {
+  .weekrow__arrow { display: none; }
+  .weekrow__times { gap: var(--sp-1); }
+}
+
+.weekrow__bed { color: var(--primary-soft); font-weight: 650; }
+:root[data-theme='light'] .weekrow__bed { color: var(--primary); }
+.weekrow__wake { color: var(--amber); font-weight: 650; }
+
+/* --- Onboarding --- */
+.onboard {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--sp-5);
+  padding: var(--sp-8) var(--sp-6) calc(var(--sp-8) + env(safe-area-inset-bottom));
+  background: var(--bg);
+  max-width: 520px;
+  margin: 0 auto;
+  overflow-y: auto;
+}
+
+.onboard__logo { font-size: 2.6rem; }
+.onboard__title { font-size: 1.75rem; font-weight: 750; letter-spacing: -0.035em; line-height: 1.15; }
+.onboard__text { font-size: 0.9rem; color: var(--text-muted); line-height: 1.65; }
+
+.onboard__list { display: flex; flex-direction: column; gap: var(--sp-4); margin: var(--sp-2) 0; }
+.onboard__item { display: flex; gap: var(--sp-4); align-items: flex-start; }
+.onboard__icon { font-size: 1.3rem; line-height: 1.3; }
+.onboard__itemTitle { font-size: 0.88rem; font-weight: 650; }
+.onboard__itemText { font-size: 0.79rem; color: var(--text-muted); line-height: 1.55; margin-top: var(--sp-1); }
+
+/* --- Editor de sesión --- */
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(3, 6, 16, 0.62);
+  backdrop-filter: blur(3px);
+  animation: fade 0.2s var(--ease);
+}
+
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+
+.sheet__panel {
+  width: 100%;
+  max-width: 520px;
+  background: var(--bg-elevated);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  border-top: 1px solid var(--border);
+  padding: var(--sp-5) var(--sp-5) calc(var(--sp-6) + env(safe-area-inset-bottom));
+  box-shadow: var(--shadow-lg);
+  animation: slideUp 0.26s var(--ease);
+  max-height: 88vh;
+  overflow-y: auto;
+}
+
+@keyframes slideUp { from { transform: translateY(18px); } to { transform: none; } }
+
+.sheet__grab {
+  width: 38px;
+  height: 4px;
+  border-radius: var(--r-full);
+  background: var(--border);
+  margin: 0 auto var(--sp-4);
+}
+
+.sheet__title { font-size: 1.05rem; font-weight: 700; margin-bottom: var(--sp-4); }
+
+.quality { display: flex; gap: var(--sp-2); }
+
+.quality__btn {
+  flex: 1;
+  padding: var(--sp-3) 0;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  border: 1.5px solid transparent;
+  font-size: 1.1rem;
+  transition: all 0.15s var(--ease);
+}
+
+.quality__btn[aria-pressed='true'] { border-color: var(--primary); background: var(--primary-dim); }
+
+/* --- Aviso de actualización disponible --- */
+.update {
+  border: 1.5px solid var(--primary);
+  background: linear-gradient(150deg, var(--primary-dim), var(--surface));
+  border-radius: var(--r-lg);
+  padding: var(--sp-5);
+  animation: rise 0.4s var(--ease);
+}
+
+.update__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.update__text {
+  font-size: 0.9rem;
+  margin-top: var(--sp-3);
+  line-height: 1.55;
+}
+
+.update__hint {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-top: var(--sp-2);
+  line-height: 1.55;
+}
+
+.update__error {
+  font-size: 0.78rem;
+  color: var(--rose);
+  margin-top: var(--sp-2);
+  line-height: 1.5;
+}

@@ -1,0 +1,45 @@
+{
+  "name": "perfectrest",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "check": "node scripts/run-checks.mjs",
+    "typecheck": "tsc -b",
+    "android:add": "npm run build && npx cap add android",
+    "android:sync": "npm run build && npx cap sync android",
+    "android:open": "npx cap open android",
+    "android:apk": "npm run build && npx cap sync android && cd android && gradlew.bat assembleDebug",
+    "layout": "node scripts/layoutcheck.mjs",
+    "shots": "node scripts/screenshots.mjs",
+    "release": "node scripts/release-apk.mjs",
+    "keystore": "node scripts/keystore.mjs"
+  },
+  "dependencies": {
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/haptics": "^8.0.2",
+    "@capacitor/local-notifications": "^8.3.0",
+    "@capacitor/preferences": "^8.0.1",
+    "@capacitor/status-bar": "^8.0.3",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/cli": "^8.5.0",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.4",
+    "esbuild": "^0.28.2",
+    "oxlint": "^1.75.0",
+    "puppeteer-core": "^25.8.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.0"
+  }
+}

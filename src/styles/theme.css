@@ -1,0 +1,134 @@
+/* PerfectRest — sistema de diseño
+   Paleta nocturna serena, contrastes verificados AA sobre fondo. */
+
+:root {
+  /* --- Tema oscuro (por defecto: es una app de sueño) --- */
+  --bg:            #090D1A;
+  --bg-elevated:   #101733;
+  --surface:       #151E3D;
+  --surface-2:     #1D2850;
+  --surface-hover: #24305E;
+  --border:        #2A3663;
+  --border-soft:   #1E294F;
+
+  --text:          #EDF0FF;
+  --text-muted:    #A7B0D8;
+  --text-faint:    #6E79A8;
+
+  --primary:       #8E7BFF;
+  --primary-soft:  #B4A6FF;
+  --primary-dim:   rgba(142, 123, 255, 0.14);
+  --primary-fg:    #0B0F20;
+
+  --mint:          #4FE0BE;
+  --mint-dim:      rgba(79, 224, 190, 0.14);
+  --amber:         #FFC776;
+  --amber-dim:     rgba(255, 199, 118, 0.14);
+  --rose:          #FF8FA8;
+  --rose-dim:      rgba(255, 143, 168, 0.14);
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.4);
+  --shadow:    0 8px 24px -8px rgba(0,0,0,.55);
+  --shadow-lg: 0 24px 60px -20px rgba(0,0,0,.7);
+
+  --r-sm: 10px;
+  --r:    16px;
+  --r-lg: 24px;
+  --r-full: 999px;
+
+  /* Escala de espaciado. Todo margen, relleno y hueco de la app sale de aquí:
+     no debe aparecer ningún valor suelto en px. `scripts/layoutcheck.mjs`
+     verifica que se cumpla en el navegador. */
+  --sp-0: 2px;
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 20px; --sp-6: 24px; --sp-8: 32px; --sp-10: 40px;
+  --sp-12: 48px;
+  /* Reserva bajo el contenido para que la barra fija nunca lo tape. */
+  --tabbar-space: 96px;
+
+  --ease: cubic-bezier(.22,.61,.36,1);
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-num: 'Inter', system-ui, sans-serif;
+}
+
+:root[data-theme='light'] {
+  --bg:            #F2F4FD;
+  --bg-elevated:   #FFFFFF;
+  --surface:       #FFFFFF;
+  --surface-2:     #EEF1FC;
+  --surface-hover: #E4E9FA;
+  --border:        #D8DEF3;
+  --border-soft:   #E8ECF9;
+
+  --text:          #141A33;
+  --text-muted:    #55608A;
+  --text-faint:    #8A93B8;
+
+  --primary:       #5B47D8;
+  --primary-soft:  #7A67EA;
+  --primary-dim:   rgba(91, 71, 216, 0.10);
+  --primary-fg:    #FFFFFF;
+
+  --mint:          #0E9B7C;
+  --mint-dim:      rgba(14, 155, 124, 0.12);
+  --amber:         #B77A16;
+  --amber-dim:     rgba(183, 122, 22, 0.12);
+  --rose:          #C94A66;
+  --rose-dim:      rgba(201, 74, 102, 0.12);
+
+  --shadow-sm: 0 1px 2px rgba(20,26,51,.06);
+  --shadow:    0 8px 24px -10px rgba(20,26,51,.18);
+  --shadow-lg: 0 24px 60px -24px rgba(20,26,51,.25);
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overscroll-behavior-y: none;
+}
+
+/* Halo ambiental de fondo */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(70% 45% at 15% -5%, var(--primary-dim), transparent 70%),
+    radial-gradient(60% 40% at 95% 8%, var(--mint-dim), transparent 70%);
+  z-index: 0;
+}
+
+button, input, select, textarea { font: inherit; color: inherit; }
+/* El relleno propio del agente de usuario (1px 6px) se cuela en cualquier
+   botón que no lo declare: se elimina para que la escala sea la única fuente. */
+button { cursor: pointer; border: none; background: none; padding: 0; }
+h1,h2,h3,h4,p { margin: 0; }
+ul { margin: 0; padding: 0; list-style: none; }
+
+/* Ningún texto largo debe romper su caja. */
+body { overflow-wrap: break-word; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--r-full); }
+::-webkit-scrollbar-track { background: transparent; }
+
+:focus-visible {
+  outline: 2px solid var(--primary-soft);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+  }
+}

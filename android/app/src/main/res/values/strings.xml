@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">PerfectRest</string>
+    <string name="title_activity_main">PerfectRest</string>
+    <string name="package_name">com.perfectrest.app</string>
+    <string name="custom_url_scheme">com.perfectrest.app</string>
+</resources>

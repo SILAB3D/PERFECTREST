@@ -1,0 +1,85 @@
+name: Publicar APK
+
+# Un push a main acaba convertido en una actualización instalada en el móvil.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'screenshots/**'
+  workflow_dispatch:
+
+concurrency:
+  group: release-apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      # Necesario para crear la release; sin esto el último paso falla con 403.
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Obligatorio: el checkout por defecto es superficial y el versionCode
+          # sale de `git rev-list --count HEAD`, que devolvería 1.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Restaurar el keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::Falta el secret KEYSTORE_BASE64. Comprueba que está en la pestaña Secrets y no en Variables."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > android/perfectrest-release.jks
+          # Un base64 pegado a medias produce un fichero corrupto que sólo se
+          # detecta al firmar; mejor comprobarlo aquí y decirlo claro.
+          if ! keytool -list -keystore android/perfectrest-release.jks -storepass "$KEYSTORE_PASSWORD" > /dev/null 2>&1; then
+            echo "::error::El keystore restaurado no es válido: base64 truncado o contraseña incorrecta."
+            exit 1
+          fi
+          {
+            echo "storeFile=perfectrest-release.jks"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEY_PASSWORD"
+          } > android/keystore.properties
+
+      - run: npm ci
+
+      - name: Comprobaciones
+        run: |
+          npm run typecheck
+          npm run lint
+          npm run check
+
+      - name: Compilar APK firmada
+        id: apk
+        run: node scripts/release-apk.mjs
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          # El formato de la etiqueta no es decorativo: la app saca de aquí el
+          # versionCode con el que decide si hay actualización, porque los
+          # assets de una release no se pueden leer desde la WebView (CORS).
+          tag_name: ${{ steps.apk.outputs.tag }}
+          name: PerfectRest ${{ steps.apk.outputs.versionName }}
+          body: ${{ github.event.head_commit.message }}
+          files: release/*.apk
