@@ -13,7 +13,7 @@
  * actualizarse nunca más: habría que desinstalar y reinstalar, perdiendo las
  * noches registradas. Guarda una copia FUERA del proyecto.
  */
-import { execFileSync } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
@@ -38,22 +38,32 @@ if (existsSync(jks)) {
 const password = randomBytes(24).toString('base64url');
 
 console.log('Generando la clave de firma…');
-execFileSync(
-  'keytool',
-  [
-    '-genkeypair',
-    '-keystore', jks,
-    '-alias', alias,
-    '-keyalg', 'RSA',
-    '-keysize', '2048',
-    '-validity', '10950',
-    '-storetype', 'PKCS12',
-    '-storepass', password,
-    '-keypass', password,
-    '-dname', 'CN=PerfectRest, OU=PerfectRest, O=PerfectRest, C=ES',
-  ],
-  { stdio: 'inherit', shell: true },
-);
+
+// Se entrecomilla cada argumento a mano: `keytool` no es un ejecutable que Node
+// pueda lanzar sin shell en Windows, y con shell los espacios de la ruta del
+// proyecto y las comas del -dname partirían el comando en trozos.
+const args = [
+  '-genkeypair',
+  '-keystore', jks,
+  '-alias', alias,
+  '-keyalg', 'RSA',
+  '-keysize', '2048',
+  '-validity', '10950',
+  '-storetype', 'PKCS12',
+  '-storepass', password,
+  '-keypass', password,
+  '-dname', 'CN=PerfectRest, OU=PerfectRest, O=PerfectRest, C=ES',
+];
+
+try {
+  execSync(`keytool ${args.map((a) => `"${a}"`).join(' ')}`, { stdio: 'pipe' });
+} catch (e) {
+  // El error de keytool trae la contraseña en la línea de comando; se recorta
+  // para no dejarla en el historial de la consola por un fallo tonto.
+  console.error('keytool falló:', (e.stderr?.toString() || e.message).split('\n')[0]);
+  console.error('Comprueba que keytool está en el PATH (viene con el JDK).');
+  process.exit(1);
+}
 
 writeFileSync(
   props,
