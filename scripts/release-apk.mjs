@@ -12,7 +12,15 @@
  * paso de la release pueda etiquetarla.
  */
 import { execFileSync, execSync } from 'node:child_process';
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import {
+  appendFileSync,
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+} from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -28,9 +36,22 @@ const isCI = process.env.CI === 'true';
  */
 const MIN_VERSION_CODE = 1;
 
+/**
+ * Ejecuta un paso del build. El `::error::` no es decorativo: los logs de
+ * Actions exigen autenticación, pero las anotaciones de un repositorio público
+ * se leen por la API sin credenciales. Sin esto, un fallo en CI sólo dice
+ * «exit code 1» desde fuera y hay que entrar al navegador a mirar el log.
+ */
 function run(command, args, options = {}) {
   console.log(`\n> ${command} ${args.join(' ')}`);
-  execFileSync(command, args, { cwd: root, stdio: 'inherit', shell: true, ...options });
+  try {
+    execFileSync(command, args, { cwd: root, stdio: 'inherit', shell: true, ...options });
+  } catch (e) {
+    const detail = `\`${command} ${args.join(' ')}\` falló con código ${e.status ?? '?'}`;
+    if (isCI) console.error(`::error::${detail}`);
+    else console.error(`\nERROR: ${detail}`);
+    process.exit(1);
+  }
 }
 
 function versionCode() {
@@ -74,6 +95,12 @@ run('npm', ['run', 'build']);
 run('npx', ['cap', 'sync', 'android']);
 
 const gradlew = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
+if (process.platform !== 'win32') {
+  // El repositorio se mantiene desde Windows, donde git no conserva el bit de
+  // ejecución: sin esto, `./gradlew` en el runner de Linux muere con
+  // "Permission denied" y el log sólo dice «exit code 1».
+  chmodSync(resolve(root, 'android/gradlew'), 0o755);
+}
 run(gradlew, ['assembleRelease'], { cwd: resolve(root, 'android') });
 
 const built = resolve(root, 'android/app/build/outputs/apk/release/app-release.apk');
