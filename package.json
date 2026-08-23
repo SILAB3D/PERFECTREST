@@ -16,6 +16,7 @@
     "android:apk": "npm run build && npx cap sync android && cd android && gradlew.bat assembleDebug",
     "layout": "node scripts/layoutcheck.mjs",
     "shots": "node scripts/screenshots.mjs",
+    "icons": "node scripts/icons.mjs",
     "release": "node scripts/release-apk.mjs",
     "keystore": "node scripts/keystore.mjs"
   },

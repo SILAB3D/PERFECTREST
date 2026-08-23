@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Capa frontal del icono adaptativo. El dibujo vive en un lienzo de 100x100
+     (el mismo que `public/logo.svg`) y el grupo lo encaja en los 108dp del
+     icono ocupando 70dp, dentro de la zona segura que Android garantiza. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.92715"
+        android:scaleY="0.92715"
+        android:translateX="7.64"
+        android:translateY="7.64">
+        <path
+            android:pathData="M44.1,16.52A34,34 0 1 0 84,50"
+            android:strokeWidth="7.5"
+            android:strokeLineCap="round">
+            <aapt:attr name="android:strokeColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="12" android:startY="12"
+                    android:endX="88" android:endY="88">
+                    <item android:offset="0" android:color="#A594FF"/>
+                    <item android:offset="0.55" android:color="#8E7BFF"/>
+                    <item android:offset="1" android:color="#4FE0BE"/>
+                </gradient>
+            </aapt:attr>
+        </path>
+        <path android:pathData="M36.68,32.77A22,22 0 1 0 67.23,63.32A28,28 0 0 1 36.68,32.77Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="12" android:startY="12"
+                    android:endX="88" android:endY="88">
+                    <item android:offset="0" android:color="#A594FF"/>
+                    <item android:offset="0.55" android:color="#8E7BFF"/>
+                    <item android:offset="1" android:color="#4FE0BE"/>
+                </gradient>
+            </aapt:attr>
+        </path>
+    </group>
+</vector>

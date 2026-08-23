@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Silueta para los iconos temáticos de Android 13+: el sistema la recolorea,
+     así que va en blanco plano sobre transparente. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.92715"
+        android:scaleY="0.92715"
+        android:translateX="7.64"
+        android:translateY="7.64">
+        <path
+            android:pathData="M44.1,16.52A34,34 0 1 0 84,50"
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="7.5"
+            android:strokeLineCap="round"/>
+        <path
+            android:pathData="M36.68,32.77A22,22 0 1 0 67.23,63.32A28,28 0 0 1 36.68,32.77Z"
+            android:fillColor="#FFFFFF"/>
+    </group>
+</vector>

@@ -25,6 +25,7 @@ Otros comandos:
 | `npm run build` | Compila a `dist/` (lo que consume el APK) |
 | `npm run typecheck` | Comprueba tipos sin compilar |
 | `npm run check` | Ejecuta las comprobaciones de dominio y de render |
+| `npm run icons` | Regenera los PNG del icono desde `public/logo.svg` |
 | `npm run release` | Compila y firma la APK de release en `release/` |
 | `npm run preview` | Sirve el build de producción |
 
@@ -168,6 +169,42 @@ final) en tema claro, oscuro, onboarding y con una sesión pendiente, y falla si
 encuentra scroll horizontal, cajas fuera del viewport, texto desbordado,
 solapamientos, contenido tapado por la barra fija, zonas táctiles menores de
 32 px o cualquier margen que no salga de la escala de espaciado del tema.
+
+---
+
+## Identidad visual
+
+La marca es una **luna creciente dentro de un arco abierto**: el arco es el
+mismo ciclo que dibuja la pantalla de Ciclos, y su hueco, arriba a la derecha,
+coincide con el lado por el que la luna se abre. El degradado va del violeta
+`#8E7BFF` al menta `#4FE0BE`, los dos acentos del tema.
+
+El original es [`public/logo.svg`](public/logo.svg), un lienzo de 100×100 con
+sólo dos trazados. De ahí salen los tres usos:
+
+| Uso | Fichero | Notas |
+| --- | --- | --- |
+| Icono del lanzador | [`drawable/ic_launcher_foreground.xml`](android/app/src/main/res/drawable/ic_launcher_foreground.xml) | Adaptativo sobre fondo `#090D1A`, con capa `monochrome` para los iconos temáticos de Android 13+ |
+| Icono heredado | `mipmap-*/ic_launcher*.png` | Sólo lo usan API 24 y 25; se generan con `npm run icons` |
+| Pantalla de arranque nativa | [`drawable/splash.xml`](android/app/src/main/res/drawable/splash.xml) | Vectorial; en Android 12+ manda [`values-v31/styles.xml`](android/app/src/main/res/values-v31/styles.xml) |
+| Pantalla de carga animada | [`index.html`](index.html) | 1,5 s: el arco se dibuja, la luna entra, aparece el nombre y todo se funde |
+| Icono de notificación | [`drawable/ic_stat_icon.xml`](android/app/src/main/res/drawable/ic_stat_icon.xml) | Silueta blanca sobre transparente, como exige Android |
+| Favicon | [`public/moon.svg`](public/moon.svg) | La marca sobre la baldosa oscura |
+
+Casi todo es vectorial: un cambio en el dibujo se propaga editando los trazados.
+Los únicos mapas de bits son los `mipmap-*` de respaldo, y se rasterizan con el
+Chrome del sistema:
+
+```bash
+npm run icons                    # regenera los PNG
+node scripts/icons.mjs --preview # además, una hoja de contacto en screenshots/
+```
+
+La animación de carga vive en el HTML y no en React a propósito: se pinta en el
+primer fotograma, antes de que el bundle se descargue, así que releva a la
+ventana de arranque nativa sin ningún parpadeo. Se quita del DOM a los 1500 ms
+para no dejar una capa invisible interceptando toques, y con
+`prefers-reduced-motion` la marca aparece ya montada y sólo se funde.
 
 ---
 
@@ -356,9 +393,14 @@ src/
   screens/               una pantalla por módulo, más Inicio y Ajustes
   styles/theme.css       paleta y tokens de diseño
 
+public/
+  logo.svg               la marca, origen de todo el juego de iconos
+  moon.svg               favicon: la marca sobre la baldosa oscura
+
 scripts/
   release-apk.mjs        compila y firma la APK de release (local y en CI)
   keystore.mjs           genera la clave de firma, una sola vez
+  icons.mjs              rasteriza los mipmap heredados desde logo.svg
 .github/workflows/
   release.yml            publica la release en cada push a main
 ```

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fondo de la pantalla de arranque nativa: coincide con el fondo del tema
+         oscuro y con `android.backgroundColor` de capacitor.config.ts, para que
+         no haya ningún salto de color antes de que pinte la web. -->
+    <color name="splash_background">#090D1A</color>
+</resources>

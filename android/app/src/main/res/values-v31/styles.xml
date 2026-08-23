@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Desde Android 12 la ventana de arranque la dibuja el sistema y no
+         respeta `android:background`: hay que darle fondo e icono por separado.
+         El icono se recorta a un círculo, así que se deja algo de aire. -->
+    <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
+        <item name="android:windowSplashScreenBackground">@color/splash_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_splash_logo</item>
+        <item name="android:background">@drawable/splash</item>
+    </style>
+</resources>

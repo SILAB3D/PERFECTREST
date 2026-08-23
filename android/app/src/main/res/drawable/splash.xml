@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Ventana de arranque en Android 11 y anteriores (en 12+ manda
+     `values-v31/styles.xml`). Vectorial: un solo fichero en vez de los diez
+     PNG por densidad y orientación que traía la plantilla. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/splash_background"/>
+    <item
+        android:gravity="center"
+        android:width="128dp"
+        android:height="128dp"
+        android:drawable="@drawable/ic_splash_logo"/>
+</layer-list>
