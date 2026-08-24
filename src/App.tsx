@@ -11,6 +11,7 @@ import { UpdateBanner } from './components/UpdateBanner';
 import { Pill } from './components/ui';
 import { useAppUpdate } from './state/update';
 import { requestPermission } from './lib/notifications';
+import { requestBatteryExemption } from './lib/backgroundMonitor';
 import { formatClock, formatDuration, relativeDayLabel } from './lib/time';
 import { useStore } from './state/store';
 import './App.css';
@@ -170,8 +171,13 @@ function Onboarding({ onDone }: { onDone: () => void }) {
 
   const start = async () => {
     setAsking(true);
-    // Se pide el permiso aquí, con el contexto fresco de para qué sirve.
+    // Se piden aquí, con el contexto fresco de para qué sirven. La exención de
+    // batería no es opcional en la práctica: sin ella Android para el servicio
+    // de madrugada y la detección no llega viva a la mañana. Dejarla escondida
+    // en Ajustes significaba que casi nadie la concedía y la app parecía no
+    // detectar nada.
     await requestPermission().catch(() => {});
+    await requestBatteryExemption().catch(() => {});
     onDone();
   };
 
@@ -212,8 +218,8 @@ function Onboarding({ onDone }: { onDone: () => void }) {
           <div>
             <div className="onboard__itemTitle">Registro sin esfuerzo</div>
             <div className="onboard__itemText">
-              Detectamos cuánto duermes a partir del tiempo que el móvil pasa sin usarse. Sin
-              permisos especiales y sin gastar batería.
+              Detectamos cuánto duermes a partir del tiempo que el móvil pasa sin usarse, y al
+              despertar te avisamos con la estimación para que la confirmes de un toque.
             </div>
           </div>
         </div>
@@ -223,8 +229,8 @@ function Onboarding({ onDone }: { onDone: () => void }) {
         {asking ? 'Un momento…' : 'Empezar'}
       </button>
       <p style={{ fontSize: '0.72rem', color: 'var(--text-faint)', textAlign: 'center', lineHeight: 1.6 }}>
-        Te pediremos permiso de notificaciones: es lo que permite avisarte a la hora de acostarte.
-        Tus datos no salen del dispositivo.
+        Te pediremos permiso de notificaciones y que excluyas la app del ahorro de batería: sin eso
+        Android detiene la detección de madrugada. Tus datos no salen del dispositivo.
       </p>
     </div>
   );

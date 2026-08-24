@@ -2,7 +2,7 @@ import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { bedtimesForWake, bestOption } from './cycles';
 import { upcomingNight } from './schedule';
-import { MINUTE, formatClock, isoDay } from './time';
+import { MINUTE, formatClock, formatDuration, isoDay } from './time';
 import type { CycleSettings, ReminderSettings, ScheduleSettings } from './types';
 
 /**
@@ -186,7 +186,15 @@ export async function notifyNow(title: string, body: string): Promise<void> {
   }
 }
 
-/** Crea el canal de notificaciones en Android (obligatorio desde Android 8). */
+/**
+ * Canal del resumen al despertar. Lo crea también el servicio nativo, que es
+ * quien lo usa de verdad; aquí se declara para que la prueba manual de Ajustes
+ * salga por el mismo sitio y compruebe de paso que el usuario no lo ha
+ * silenciado.
+ */
+export const SUMMARY_CHANNEL = 'perfectrest-summary';
+
+/** Crea los canales de notificación en Android (obligatorios desde Android 8). */
 export async function ensureChannel(): Promise<void> {
   if (!isNative) return;
   try {
@@ -197,8 +205,44 @@ export async function ensureChannel(): Promise<void> {
       importance: 4,
       visibility: 1,
     });
+    await LocalNotifications.createChannel({
+      id: SUMMARY_CHANNEL,
+      name: 'Resumen al despertar',
+      description: 'La estimación de lo que has dormido, para que la valides',
+      importance: 3,
+      visibility: 1,
+    });
   } catch {
     /* algunos dispositivos rechazan la recreación del canal: no es crítico */
+  }
+}
+
+/**
+ * Aviso con la estimación de una noche, en el mismo formato que emite el
+ * servicio nativo al cerrarse el hueco. La app sólo lo usa para la prueba
+ * manual de Ajustes: en el despertar real quien avisa es el servicio, porque a
+ * esa hora la app lleva horas cerrada.
+ */
+export async function notifySleepSummary(start: number, end: number): Promise<void> {
+  const title = `Has dormido ${formatDuration(end - start)}`;
+  const body = `De ${formatClock(start)} a ${formatClock(end)}. Toca para confirmarlo o corregirlo.`;
+
+  if (isNative) {
+    await LocalNotifications.schedule({
+      notifications: [
+        {
+          id: Math.floor(Math.random() * 1000) + 8000,
+          title,
+          body,
+          smallIcon: 'ic_stat_icon',
+          channelId: SUMMARY_CHANNEL,
+        },
+      ],
+    });
+    return;
+  }
+  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    new Notification(title, { body });
   }
 }
 

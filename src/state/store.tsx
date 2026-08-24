@@ -23,6 +23,7 @@ import {
 import { DEFAULT_TRIGGERS } from '../lib/triggers';
 import { ensureChannel, rescheduleAll, scheduleForegroundReminders } from '../lib/notifications';
 import { startBackground, stopBackground } from '../lib/backgroundMonitor';
+import { parseTime } from '../lib/time';
 import type { AppState, SleepSession } from '../lib/types';
 
 const STORAGE_KEY = 'perfectrest.state.v1';
@@ -45,6 +46,7 @@ export const initialState: AppState = {
     nightEnd: '11:00',
     autoConfirm: false,
     background: true,
+    wakeSummary: true,
     triggers: DEFAULT_TRIGGERS,
   },
   sessions: [],
@@ -235,13 +237,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // permanente desaparecen.
   useEffect(() => {
     if (!ready) return;
-    const { enabled, background, minGapMinutes } = state.monitor;
+    const { enabled, background, minGapMinutes, wakeSummary } = state.monitor;
     // Al servicio se le pasan los disparadores nativos activos: si el usuario
     // apaga el del cargador, deja de escuchar ese evento en vez de filtrarlo
     // después. Sin ninguno activo, `startBackground` para el servicio.
     const triggers = activeNativeTriggers(state.monitor);
-    if (enabled && background) void startBackground(minGapMinutes, triggers);
-    else void stopBackground();
+    if (enabled && background) {
+      // El aviso al despertar lo emite el servicio, que es el único que sigue
+      // vivo a esa hora, así que necesita el ajuste y la ventana nocturna.
+      void startBackground({
+        minGapMinutes,
+        triggers,
+        wakeSummary,
+        nightStartMinutes: parseTime(state.monitor.nightStart),
+        nightEndMinutes: parseTime(state.monitor.nightEnd),
+      });
+    } else {
+      void stopBackground();
+    }
     // Depende del objeto entero en vez de campo a campo: volver a arrancar el
     // servicio es idempotente y así ningún ajuste nuevo se queda sin propagar.
   }, [ready, state.monitor]);

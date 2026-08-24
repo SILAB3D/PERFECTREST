@@ -12,16 +12,21 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
 
 import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+
+import java.util.Calendar;
+import java.util.Locale;
 
 /**
  * Monitorización del uso del dispositivo en segundo plano.
@@ -49,6 +54,12 @@ import org.json.JSONObject;
  * de madrugada, así que el servicio se rearma con una alarma exacta periódica.
  * Sin eso, la detección se apagaba silenciosamente y sólo volvía a haber datos
  * al abrir la app, que es justo lo que se quería evitar.
+ *
+ * Todo lo que puede fallar por un permiso que falta —entrar en primer plano,
+ * programar la alarma exacta, publicar una notificación— queda anotado en
+ * {@link #KEY_LAST_ERROR} en vez de morir en silencio: es lo único que
+ * distingue «anoche no dejaste señal» de «el servicio llevaba semanas sin
+ * arrancar».
  */
 public class SleepMonitorService extends Service {
 
@@ -62,6 +73,26 @@ public class SleepMonitorService extends Service {
     /** Disparadores activos, separados por comas: "screen,charger". */
     public static final String KEY_TRIGGERS = "triggers";
 
+    /** Instante en que el servicio entró en primer plano por última vez. */
+    public static final String KEY_STARTED_AT = "startedAt";
+    /**
+     * Latido del servicio: se refresca al arrancar y con cada evento recibido.
+     * Es lo que permite saber si sigue vivo de verdad, sin depender de
+     * getRunningServices, que informa de un proceso que puede llevar horas sin
+     * recibir nada.
+     */
+    public static final String KEY_ALIVE_AT = "aliveAt";
+    /** Última razón por la que el servicio no pudo hacer su trabajo. */
+    public static final String KEY_LAST_ERROR = "lastError";
+    /** Instante del último hueco encolado, para el diagnóstico de Ajustes. */
+    public static final String KEY_LAST_GAP_AT = "lastGapAt";
+
+    /** Aviso con la estimación del sueño al despertar (Módulo 3). */
+    public static final String KEY_SUMMARY = "wakeSummary";
+    /** Ventana nocturna en minutos desde medianoche, para filtrar ese aviso. */
+    public static final String KEY_NIGHT_START = "nightStartMin";
+    public static final String KEY_NIGHT_END = "nightEndMin";
+
     public static final String TRIGGER_SCREEN = "screen";
     public static final String TRIGGER_CHARGER = "charger";
 
@@ -69,7 +100,10 @@ public class SleepMonitorService extends Service {
     public static final String ACTION_RESTART = "com.perfectrest.app.RESTART_MONITOR";
 
     private static final String CHANNEL_ID = "perfectrest-monitor";
+    /** Canal del resumen al despertar: éste sí debe verse y avisar. */
+    public static final String SUMMARY_CHANNEL_ID = "perfectrest-summary";
     private static final int NOTIFICATION_ID = 4711;
+    private static final int SUMMARY_NOTIFICATION_ID = 4712;
     /** Tope de huecos guardados: si la app no se abre en semanas, no crece sin fin. */
     private static final int MAX_GAPS = 60;
     /** Cada cuánto comprueba la alarma que el servicio sigue vivo. */
@@ -81,6 +115,7 @@ public class SleepMonitorService extends Service {
     public void onCreate() {
         super.onCreate();
         createChannel();
+        createSummaryChannel();
         startInForeground();
         registerDeviceReceiver();
         primeScreenState();
@@ -89,7 +124,10 @@ public class SleepMonitorService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        prefs().edit().putBoolean(KEY_ENABLED, true).apply();
+        prefs().edit()
+            .putBoolean(KEY_ENABLED, true)
+            .putLong(KEY_ALIVE_AT, System.currentTimeMillis())
+            .apply();
         // Los ajustes pueden haber cambiado entre dos arranques (el usuario
         // activa o desactiva un disparador), así que se vuelve a registrar.
         registerDeviceReceiver();
@@ -139,19 +177,46 @@ public class SleepMonitorService extends Service {
         return false;
     }
 
+    /** Deja constancia de un fallo para que Ajustes pueda explicarlo. */
+    private void recordError(String message) {
+        prefs().edit().putString(KEY_LAST_ERROR, message).apply();
+    }
+
+    private void clearError() {
+        prefs().edit().remove(KEY_LAST_ERROR).apply();
+    }
+
     // --- Ciclo de vida en primer plano ---
 
     private void startInForeground() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            // Android 14 exige declarar el tipo al entrar en primer plano, no
-            // sólo en el manifiesto.
-            startForeground(
-                NOTIFICATION_ID,
-                buildNotification(),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-            );
-        } else {
-            startForeground(NOTIFICATION_ID, buildNotification());
+        long now = System.currentTimeMillis();
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                // Android 14 exige declarar el tipo al entrar en primer plano, no
+                // sólo en el manifiesto.
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                );
+            } else {
+                startForeground(NOTIFICATION_ID, buildNotification());
+            }
+            prefs().edit()
+                .putLong(KEY_STARTED_AT, now)
+                .putLong(KEY_ALIVE_AT, now)
+                .apply();
+            clearError();
+        } catch (Exception e) {
+            // En Android 12+ arrancar un servicio en primer plano desde segundo
+            // plano está prohibido salvo exención. Sin exención de batería y sin
+            // alarma exacta esto es exactamente lo que pasa de madrugada: el
+            // servicio no vuelve y la noche se pierde entera. Antes moría en
+            // silencio y la UI seguía diciendo «en marcha».
+            recordError("No se pudo entrar en primer plano ("
+                + e.getClass().getSimpleName()
+                + "). Casi siempre es la optimización de batería.");
+            stopSelf();
         }
     }
 
@@ -180,8 +245,13 @@ public class SleepMonitorService extends Service {
             alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pending);
         } catch (SecurityException e) {
             // Sin permiso de alarmas exactas se degrada a una inexacta: menos
-            // puntual, pero sigue rearmando el servicio.
+            // puntual, pero sigue rearmando el servicio. Con Doze de por medio
+            // puede retrasarse horas, así que la UI tiene que poder decirlo.
             alarms.set(AlarmManager.RTC_WAKEUP, at, pending);
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putString(KEY_LAST_ERROR,
+                    "Sin permiso de alarmas exactas: el servicio puede tardar horas en rearmarse.")
+                .apply();
         }
     }
 
@@ -225,7 +295,10 @@ public class SleepMonitorService extends Service {
             filter.addAction(Intent.ACTION_POWER_DISCONNECTED);
             any = true;
         }
-        if (!any) return;
+        if (!any) {
+            recordError("Ningún disparador del dispositivo está activo: el servicio no escucha nada.");
+            return;
+        }
 
         receiver = new BroadcastReceiver() {
             @Override
@@ -243,6 +316,9 @@ public class SleepMonitorService extends Service {
 
     private void handleEvent(String action, long now) {
         if (action == null) return;
+
+        // Cualquier evento recibido demuestra que el servicio sigue escuchando.
+        prefs().edit().putLong(KEY_ALIVE_AT, now).apply();
 
         switch (action) {
             case Intent.ACTION_SCREEN_OFF:
@@ -364,8 +440,109 @@ public class SleepMonitorService extends Service {
         while (gaps.length() > MAX_GAPS) {
             gaps.remove(0);
         }
-        p.edit().putString(KEY_GAPS, gaps.toString()).apply();
+        p.edit()
+            .putString(KEY_GAPS, gaps.toString())
+            .putLong(KEY_LAST_GAP_AT, end)
+            .apply();
+
+        maybeNotifySummary(start, end);
     }
+
+    // --- Aviso con la estimación del sueño al despertar ---
+
+    /**
+     * Avisa con la estimación en cuanto se cierra el hueco.
+     *
+     * El momento es el punto: la propuesta ya existía antes, pero esperaba a
+     * que el usuario abriera la app, que es justo lo que uno no hace al
+     * despertarse. Con el aviso, la validación llega mientras la noche todavía
+     * se recuerda.
+     *
+     * El filtro es deliberadamente laxo —umbral mínimo, ya aplicado por quien
+     * llama, y un extremo dentro de la ventana nocturna—: la evaluación fina
+     * (confianza, fusión de disparadores, corrección de bordes) la hace la capa
+     * web al abrirse, y duplicarla aquí sólo garantizaría que las dos acaben
+     * desincronizadas. La cifra del aviso es el hueco bruto; la que se guarda,
+     * la refinada.
+     */
+    private void maybeNotifySummary(long start, long end) {
+        if (!prefs().getBoolean(KEY_SUMMARY, false)) return;
+        if (!inNightWindow(start) && !inNightWindow(end)) return;
+        if (!canPostNotifications()) {
+            recordError("Sin permiso de notificaciones: no se pudo avisar de la noche detectada.");
+            return;
+        }
+
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager == null) return;
+
+        String duration = formatDuration(end - start);
+
+        Intent open = new Intent(this, MainActivity.class);
+        open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        PendingIntent pending = PendingIntent.getActivity(
+            this, 1, open,
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+
+        String body = "De " + clock(start) + " a " + clock(end)
+            + ". Toca para confirmarlo o corregirlo.";
+
+        Notification notification = new NotificationCompat.Builder(this, SUMMARY_CHANNEL_ID)
+            .setContentTitle("Has dormido " + duration)
+            .setContentText(body)
+            .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
+            .setSmallIcon(R.drawable.ic_stat_icon)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setAutoCancel(true)
+            .setContentIntent(pending)
+            .build();
+
+        try {
+            manager.notify(SUMMARY_NOTIFICATION_ID, notification);
+        } catch (SecurityException e) {
+            recordError("Sin permiso de notificaciones: no se pudo avisar de la noche detectada.");
+        }
+    }
+
+    /** ¿Cae este instante dentro de la ventana nocturna configurada? */
+    private boolean inNightWindow(long ts) {
+        int startMin = prefs().getInt(KEY_NIGHT_START, 21 * 60 + 30);
+        int endMin = prefs().getInt(KEY_NIGHT_END, 11 * 60);
+
+        Calendar cal = Calendar.getInstance();
+        cal.setTimeInMillis(ts);
+        int m = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE);
+
+        // La ventana cruza medianoche cuando el fin es menor que el inicio.
+        return startMin <= endMin ? (m >= startMin && m <= endMin) : (m >= startMin || m <= endMin);
+    }
+
+    /** Mismo formato que `formatDuration` en la capa web: "7h 20m", "7h", "45m". */
+    private String formatDuration(long ms) {
+        long total = Math.max(0L, Math.round(ms / 60_000.0));
+        long h = total / 60;
+        long m = total % 60;
+        if (h == 0) return m + "m";
+        if (m == 0) return h + "h";
+        return h + "h " + m + "m";
+    }
+
+    private String clock(long ts) {
+        Calendar cal = Calendar.getInstance();
+        cal.setTimeInMillis(ts);
+        return String.format(Locale.getDefault(), "%02d:%02d",
+            cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE));
+    }
+
+    private boolean canPostNotifications() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true;
+        return ContextCompat.checkSelfPermission(this, "android.permission.POST_NOTIFICATIONS")
+            == PackageManager.PERMISSION_GRANTED;
+    }
+
+    // --- Canales ---
 
     private void createChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
@@ -385,6 +562,26 @@ public class SleepMonitorService extends Service {
         manager.createNotificationChannel(channel);
     }
 
+    /**
+     * Canal aparte para el resumen del despertar. Va separado a propósito: el
+     * de la monitorización está silenciado por definición, y el usuario debe
+     * poder silenciar uno sin perder el otro.
+     */
+    private void createSummaryChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager == null) return;
+
+        NotificationChannel channel = new NotificationChannel(
+            SUMMARY_CHANNEL_ID,
+            "Resumen al despertar",
+            NotificationManager.IMPORTANCE_DEFAULT
+        );
+        channel.setDescription("La estimación de lo que has dormido, para que la valides");
+        channel.setShowBadge(true);
+        manager.createNotificationChannel(channel);
+    }
+
     private Notification buildNotification() {
         Intent open = new Intent(this, MainActivity.class);
         open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
@@ -396,7 +593,7 @@ public class SleepMonitorService extends Service {
         return new NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("PerfectRest")
             .setContentText("Detectando tu descanso")
-            .setSmallIcon(android.R.drawable.ic_popup_reminder)
+            .setSmallIcon(R.drawable.ic_stat_icon)
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .setOngoing(true)
             .setShowWhen(false)

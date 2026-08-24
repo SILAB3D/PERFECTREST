@@ -3,29 +3,26 @@ import { Card, Pill, Segmented, Stepper, TimeField, Toggle } from '../components
 import {
   currentPermission,
   notifyNow,
+  notifySleepSummary,
   requestPermission,
   type PermissionState,
 } from '../lib/notifications';
 import {
   backgroundStatus,
   isBackgroundAvailable,
+  openAppSettings,
+  openNotificationSettings,
   requestBatteryExemption,
+  requestExactAlarms,
   type MonitorStatus,
 } from '../lib/backgroundMonitor';
 import { TRIGGERS, triggerEnabled } from '../lib/triggers';
-import { formatDuration } from '../lib/time';
+import { HOUR, formatDuration } from '../lib/time';
 import { useStore } from '../state/store';
 import { useAppUpdate } from '../state/update';
 import { UpdateBanner } from '../components/UpdateBanner';
 import { APP_VERSION } from '../lib/updater';
 import type { TriggerId } from '../lib/types';
-
-const PERMISSION_COPY: Record<PermissionState, { tone: 'mint' | 'rose' | 'amber' | 'muted'; text: string }> = {
-  granted: { tone: 'mint', text: 'Concedido' },
-  denied: { tone: 'rose', text: 'Denegado' },
-  prompt: { tone: 'amber', text: 'Sin conceder' },
-  unsupported: { tone: 'muted', text: 'No disponible' },
-};
 
 export function SettingsScreen() {
   const { state, patch, dispatch } = useStore();
@@ -36,9 +33,20 @@ export function SettingsScreen() {
     running: false,
     enabled: false,
     batteryExempt: false,
+    notifications: false,
+    exactAlarms: false,
     lastUsedAt: 0,
+    startedAt: 0,
+    aliveAt: 0,
+    lastGapAt: 0,
+    lastError: null,
   });
   const backgroundReady = isBackgroundAvailable();
+
+  const refresh = () => {
+    void currentPermission().then(setPermission);
+    if (backgroundReady) void backgroundStatus().then(setService);
+  };
 
   useEffect(() => {
     void currentPermission().then(setPermission);
@@ -51,6 +59,18 @@ export function SettingsScreen() {
     const id = window.setInterval(() => void backgroundStatus().then(setService), 5000);
     return () => window.clearInterval(id);
   }, [backgroundReady, monitor.background, monitor.triggers]);
+
+  // Los permisos se conceden en pantallas del sistema, fuera de la app, y nada
+  // avisa de que han cambiado: al volver al primer plano hay que releerlos o el
+  // diagnóstico seguiría pidiendo algo ya concedido.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refresh();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backgroundReady]);
 
   const setTrigger = (id: TriggerId, on: boolean) =>
     patch({ monitor: { ...monitor, triggers: { ...monitor.triggers, [id]: on } } });
@@ -81,30 +101,13 @@ export function SettingsScreen() {
         </p>
       </Card>
 
-      <Card
-        title="Permiso de notificaciones"
-        action={<Pill tone={PERMISSION_COPY[permission].tone}>{PERMISSION_COPY[permission].text}</Pill>}
-      >
-        <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
-          Sin este permiso los recordatorios del Módulo 1 no pueden avisarte.
-        </p>
-        <div className="pending__actions">
-          <button
-            className="btn btn--primary"
-            onClick={() => void requestPermission().then(setPermission)}
-            disabled={permission === 'granted' || permission === 'unsupported'}
-          >
-            {permission === 'granted' ? 'Ya concedido' : 'Conceder permiso'}
-          </button>
-          <button
-            className="btn btn--ghost"
-            onClick={() => void notifyNow('PerfectRest', 'Así se verán tus recordatorios.')}
-            disabled={permission !== 'granted'}
-          >
-            Probar aviso
-          </button>
-        </div>
-      </Card>
+      <PermissionsCard
+        permission={permission}
+        service={service}
+        backgroundReady={backgroundReady}
+        onRefresh={refresh}
+        onSetPermission={setPermission}
+      />
 
       <Card
         title="Detección automática del sueño"
@@ -168,47 +171,36 @@ export function SettingsScreen() {
             />
 
             <Toggle
+              checked={monitor.wakeSummary}
+              onChange={(v) => patch({ monitor: { ...monitor, wakeSummary: v } })}
+              label="Avisarme con la estimación al despertar"
+              hint={
+                backgroundReady
+                  ? 'En cuanto se cierre la noche recibirás una notificación con lo que has dormido, para confirmarlo de un toque sin abrir la app.'
+                  : 'Disponible solo en la app instalada: el aviso lo emite el servicio, que es lo único despierto a esa hora.'
+              }
+            />
+
+            {monitor.wakeSummary && (
+              <div className="pending__actions">
+                <button
+                  className="btn btn--ghost"
+                  onClick={() =>
+                    void notifySleepSummary(Date.now() - 7.5 * HOUR, Date.now())
+                  }
+                  disabled={permission !== 'granted'}
+                >
+                  Ver cómo queda el aviso
+                </button>
+              </div>
+            )}
+
+            <Toggle
               checked={monitor.autoConfirm}
               onChange={(v) => patch({ monitor: { ...monitor, autoConfirm: v } })}
               label="Guardar sin preguntar"
               hint="Registra las sesiones detectadas directamente; podrás corregirlas en el historial"
             />
-
-            {backgroundReady && monitor.background && (
-              <>
-                <div className="row">
-                  <div>
-                    <div className="row__label">Servicio en segundo plano</div>
-                    <div className="row__hint">
-                      Es quien vigila el dispositivo mientras duermes. Si aparece detenido, la
-                      detección se limita a las aperturas de la app.
-                    </div>
-                  </div>
-                  <Pill tone={service.running ? 'mint' : 'amber'}>
-                    {service.running ? 'en marcha' : 'detenido'}
-                  </Pill>
-                </div>
-
-                {!service.batteryExempt && (
-                  <div className="row">
-                    <div>
-                      <div className="row__label">Optimización de batería</div>
-                      <div className="row__hint">
-                        Mientras esté activa, Android puede parar el servicio de madrugada y
-                        perderse la noche entera. Es la causa más común de que sólo se detecten
-                        las aperturas de la app.
-                      </div>
-                    </div>
-                    <button
-                      className="btn btn--primary"
-                      onClick={() => void requestBatteryExemption()}
-                    >
-                      Desactivar
-                    </button>
-                  </div>
-                )}
-              </>
-            )}
 
             <div className="row">
               <div>
@@ -315,6 +307,164 @@ export function SettingsScreen() {
         médico. Si el insomnio persiste, consulta con un profesional.
       </p>
     </>
+  );
+}
+
+/**
+ * Diagnóstico de permisos.
+ *
+ * Los disparadores del dispositivo dependen de tres cosas que Android concede
+ * fuera de la app —notificaciones, alarmas exactas y exención de batería— y que
+ * puede retirar sin avisar. Ninguna falla con un error: sin ellas la detección
+ * simplemente no registra nada, que desde fuera es idéntico a una noche sin
+ * señal. Ésta es la pantalla donde se distingue una cosa de la otra, y por eso
+ * cada línea lleva su propio atajo a los ajustes del sistema en vez de un
+ * consejo genérico.
+ */
+function PermissionsCard({
+  permission,
+  service,
+  backgroundReady,
+  onRefresh,
+  onSetPermission,
+}: {
+  permission: PermissionState;
+  service: MonitorStatus;
+  backgroundReady: boolean;
+  onRefresh: () => void;
+  onSetPermission: (p: PermissionState) => void;
+}) {
+  // El permiso puede estar concedido y las notificaciones de la app apagadas
+  // desde los ajustes del sistema: para el usuario el resultado es el mismo.
+  const notificationsOk =
+    permission === 'granted' && (!backgroundReady || service.notifications);
+
+  const checks: {
+    key: string;
+    label: string;
+    hint: string;
+    ok: boolean;
+    action?: { label: string; run: () => void };
+  }[] = [
+    {
+      key: 'notifications',
+      label: 'Notificaciones',
+      hint: 'Los recordatorios de acostarte, el aviso al despertar y la notificación que mantiene vivo el servicio.',
+      ok: notificationsOk,
+      action:
+        permission === 'prompt'
+          ? { label: 'Conceder', run: () => void requestPermission().then(onSetPermission) }
+          : permission === 'unsupported'
+            ? undefined
+            : {
+                // Tras la segunda negativa Android ya no muestra el diálogo, así
+                // que volver a pedirlo desde aquí no haría absolutamente nada.
+                label: notificationsOk ? 'Ajustar' : 'Abrir ajustes',
+                run: () => void openNotificationSettings(),
+              },
+    },
+  ];
+
+  if (backgroundReady) {
+    checks.push(
+      {
+        key: 'battery',
+        label: 'Sin optimización de batería',
+        hint: 'Con la optimización activa, Android para el servicio de madrugada y la noche entera se pierde. Es la causa más común de que no se detecte nada.',
+        ok: service.batteryExempt,
+        action: service.batteryExempt
+          ? undefined
+          : { label: 'Desactivar', run: () => void requestBatteryExemption() },
+      },
+      {
+        key: 'alarms',
+        label: 'Alarmas exactas',
+        hint: 'El servicio se rearma con una alarma cada 15 minutos. Sin permiso se degrada a inexacta y Doze puede retrasarla horas, justo mientras duermes.',
+        ok: service.exactAlarms,
+        action: service.exactAlarms
+          ? undefined
+          : { label: 'Permitir', run: () => void requestExactAlarms() },
+      },
+      {
+        key: 'service',
+        label: 'Servicio en marcha',
+        hint: service.aliveAt
+          ? `Última señal de vida hace ${formatDuration(Date.now() - service.aliveAt)}.`
+          : 'Todavía no ha dado señales de vida. Abre y cierra la app una vez.',
+        ok: service.running,
+      },
+    );
+  }
+
+  const failing = checks.filter((c) => !c.ok).length;
+
+  return (
+    <Card
+      title="Permisos y estado de la detección"
+      sub="Todo lo que la detección necesita del sistema. Si algo falta, no falla con un error: simplemente deja de registrar noches."
+      action={
+        <Pill tone={failing ? 'amber' : 'mint'}>
+          {failing ? `${failing} pendiente${failing > 1 ? 's' : ''}` : 'todo listo'}
+        </Pill>
+      }
+    >
+      {checks.map((check) => (
+        <div className="row" key={check.key}>
+          <div>
+            <div className="row__label">
+              {check.ok ? '✓' : '!'} {check.label}
+            </div>
+            <div className="row__hint">{check.hint}</div>
+          </div>
+          {check.action ? (
+            <button
+              className={check.ok ? 'btn btn--ghost' : 'btn btn--primary'}
+              onClick={() => {
+                check.action?.run();
+                // La pantalla del sistema es otra actividad: el estado nuevo se
+                // relee al volver, pero un refresco aquí cubre los diálogos que
+                // se resuelven sin salir de la app.
+                window.setTimeout(onRefresh, 500);
+              }}
+            >
+              {check.action.label}
+            </button>
+          ) : (
+            <Pill tone={check.ok ? 'mint' : 'rose'}>{check.ok ? 'ok' : 'falta'}</Pill>
+          )}
+        </div>
+      ))}
+
+      {service.lastError && (
+        <p style={{ fontSize: '0.78rem', color: 'var(--amber)', lineHeight: 1.55, marginTop: 'var(--sp-3)' }}>
+          Último problema del servicio: {service.lastError}
+        </p>
+      )}
+
+      {backgroundReady && service.lastGapAt > 0 && (
+        <p style={{ fontSize: '0.76rem', color: 'var(--text-muted)', lineHeight: 1.55, marginTop: 'var(--sp-3)' }}>
+          Última noche detectada hace {formatDuration(Date.now() - service.lastGapAt)}.
+        </p>
+      )}
+
+      <div className="pending__actions">
+        <button
+          className="btn btn--ghost"
+          onClick={() => void notifyNow('PerfectRest', 'Así se verán tus recordatorios.')}
+          disabled={permission !== 'granted'}
+        >
+          Probar aviso
+        </button>
+        <button className="btn btn--ghost" onClick={onRefresh}>
+          Volver a comprobar
+        </button>
+        {backgroundReady && (
+          <button className="btn btn--ghost" onClick={() => void openAppSettings()}>
+            Ajustes del sistema
+          </button>
+        )}
+      </div>
+    </Card>
   );
 }
 

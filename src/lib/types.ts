@@ -72,6 +72,13 @@ export interface MonitorSettings {
   /** Registrar sesiones automáticamente sin pedir confirmación. */
   autoConfirm: boolean;
   /**
+   * Avisar con la estimación en cuanto se cierra la noche, para validarla sin
+   * tener que abrir la app. Lo dispara el servicio nativo, no la web: al
+   * despertar nadie abre PerfectRest, y esperar a que lo haga era lo que dejaba
+   * la propuesta enterrada durante días.
+   */
+  wakeSummary: boolean;
+  /**
    * Mantener la detección activa con la app cerrada (sólo en el APK).
    * Requiere un servicio en primer plano con notificación permanente.
    */

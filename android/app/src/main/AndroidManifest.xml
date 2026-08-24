@@ -36,7 +36,10 @@
                 android:value="sleep_tracking" />
         </service>
 
-        <!-- Reanuda la monitorización tras reiniciar el dispositivo. -->
+        <!-- Reanuda la monitorización tras reiniciar el dispositivo, tras una
+             actualización de la propia app (que la detiene por completo y
+             cancela sus alarmas) y en las ROMs que emiten QUICKBOOT_POWERON en
+             lugar de BOOT_COMPLETED. -->
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
@@ -45,6 +48,10 @@
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 

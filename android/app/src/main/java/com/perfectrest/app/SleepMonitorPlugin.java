@@ -1,14 +1,19 @@
 package com.perfectrest.app;
 
 import android.app.ActivityManager;
+import android.app.AlarmManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.text.TextUtils;
+
+import androidx.core.app.NotificationManagerCompat;
+import androidx.core.content.ContextCompat;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -30,9 +35,20 @@ import java.util.List;
  * La web decide qué hacer con los datos; este plugin sólo arranca y para el
  * servicio, le dice qué disparadores debe escuchar y entrega los huecos de
  * inactividad registrados mientras la app estaba cerrada.
+ *
+ * La otra mitad de su trabajo es el diagnóstico. Los disparadores del
+ * dispositivo dependen de tres permisos que Android concede fuera de la app y
+ * puede retirar sin avisar —notificaciones, alarmas exactas y exención de
+ * batería—, y sin ellos la detección no falla con un error: simplemente no
+ * detecta nada, que es indistinguible de una noche sin señal. Por eso
+ * {@link #diagnostics} los expone todos y hay un método para abrir la pantalla
+ * de ajustes de cada uno.
  */
 @CapacitorPlugin(name = "SleepMonitor")
 public class SleepMonitorPlugin extends Plugin {
+
+    /** Margen antes de dar por muerto un servicio que no da señales de vida. */
+    private static final long ALIVE_WINDOW_MS = 45 * 60_000L;
 
     private SharedPreferences prefs() {
         return getContext().getSharedPreferences(SleepMonitorService.PREFS, Context.MODE_PRIVATE);
@@ -59,6 +75,11 @@ public class SleepMonitorPlugin extends Plugin {
         prefs().edit()
             .putInt(SleepMonitorService.KEY_MIN_GAP, minGap)
             .putString(SleepMonitorService.KEY_TRIGGERS, triggers)
+            // El aviso del despertar lo dispara el servicio, no la web: para
+            // eso tiene que conocer el ajuste y la ventana nocturna.
+            .putBoolean(SleepMonitorService.KEY_SUMMARY, call.getBoolean("wakeSummary", false))
+            .putInt(SleepMonitorService.KEY_NIGHT_START, call.getInt("nightStartMinutes", 21 * 60 + 30))
+            .putInt(SleepMonitorService.KEY_NIGHT_END, call.getInt("nightEndMinutes", 11 * 60))
             .apply();
 
         Intent intent = new Intent(getContext(), SleepMonitorService.class);
@@ -69,12 +90,19 @@ public class SleepMonitorPlugin extends Plugin {
                 getContext().startService(intent);
             }
         } catch (Exception e) {
+            prefs().edit()
+                .putString(SleepMonitorService.KEY_LAST_ERROR,
+                    "Android rechazó arrancar el servicio: " + e.getClass().getSimpleName())
+                .apply();
             call.reject("No se pudo iniciar el servicio: " + e.getMessage());
             return;
         }
 
+        // No se responde `true` a ciegas. El servicio puede haber sido
+        // rechazado al entrar en primer plano, y devolver «en marcha» cuando no
+        // lo está es lo que hacía que Ajustes mintiera durante semanas.
         JSObject ret = new JSObject();
-        ret.put("running", true);
+        ret.put("running", serviceRunning());
         call.resolve(ret);
     }
 
@@ -93,12 +121,37 @@ public class SleepMonitorPlugin extends Plugin {
 
     @PluginMethod
     public void isRunning(PluginCall call) {
+        call.resolve(status());
+    }
+
+    /**
+     * Estado completo de todo lo que la detección necesita para funcionar.
+     *
+     * Se devuelve junto porque el usuario no vive los permisos por separado:
+     * lo que quiere saber es si esta noche se va a registrar o no, y eso
+     * depende de los cuatro a la vez.
+     */
+    @PluginMethod
+    public void diagnostics(PluginCall call) {
+        call.resolve(status());
+    }
+
+    private JSObject status() {
+        SharedPreferences p = prefs();
+        long aliveAt = p.getLong(SleepMonitorService.KEY_ALIVE_AT, 0L);
+
         JSObject ret = new JSObject();
         ret.put("running", serviceRunning());
-        ret.put("enabled", prefs().getBoolean(SleepMonitorService.KEY_ENABLED, false));
+        ret.put("enabled", p.getBoolean(SleepMonitorService.KEY_ENABLED, false));
         ret.put("batteryExempt", batteryExempt());
-        ret.put("lastUsedAt", prefs().getLong(SleepMonitorService.KEY_LAST_USED, 0L));
-        call.resolve(ret);
+        ret.put("notifications", notificationsGranted());
+        ret.put("exactAlarms", exactAlarmsAllowed());
+        ret.put("lastUsedAt", p.getLong(SleepMonitorService.KEY_LAST_USED, 0L));
+        ret.put("startedAt", p.getLong(SleepMonitorService.KEY_STARTED_AT, 0L));
+        ret.put("aliveAt", aliveAt);
+        ret.put("lastGapAt", p.getLong(SleepMonitorService.KEY_LAST_GAP_AT, 0L));
+        ret.put("lastError", p.getString(SleepMonitorService.KEY_LAST_ERROR, null));
+        return ret;
     }
 
     /**
@@ -183,13 +236,118 @@ public class SleepMonitorPlugin extends Plugin {
         call.resolve(ret);
     }
 
+    /**
+     * Pantalla de «alarmas y recordatorios». Sin ese permiso la alarma de
+     * vigilancia se degrada a inexacta, Doze la agrupa y el servicio puede
+     * pasar la noche entera sin rearmarse.
+     */
+    @PluginMethod
+    public void requestExactAlarms(PluginCall call) {
+        JSObject ret = new JSObject();
+
+        if (exactAlarmsAllowed() || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            ret.put("requested", false);
+            call.resolve(ret);
+            return;
+        }
+
+        try {
+            getContext().startActivity(
+                new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
+                    .setData(Uri.parse("package:" + getContext().getPackageName()))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            );
+            ret.put("requested", true);
+        } catch (Exception e) {
+            ret.put("requested", false);
+        }
+
+        call.resolve(ret);
+    }
+
+    /**
+     * Ficha de la app en los ajustes del sistema.
+     *
+     * Es la única salida cuando un permiso está denegado de forma permanente:
+     * a partir de la segunda negativa Android ya no muestra el diálogo, así que
+     * el botón «conceder» de la app no hacía absolutamente nada y parecía roto.
+     */
+    @PluginMethod
+    public void openAppSettings(PluginCall call) {
+        JSObject ret = new JSObject();
+        try {
+            getContext().startActivity(
+                new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.parse("package:" + getContext().getPackageName()))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            );
+            ret.put("opened", true);
+        } catch (Exception e) {
+            ret.put("opened", false);
+        }
+        call.resolve(ret);
+    }
+
+    /** Ajustes de notificaciones de la app, para reactivar un canal silenciado. */
+    @PluginMethod
+    public void openNotificationSettings(PluginCall call) {
+        JSObject ret = new JSObject();
+        try {
+            Intent intent;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, getContext().getPackageName());
+            } else {
+                intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.parse("package:" + getContext().getPackageName()));
+            }
+            getContext().startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            ret.put("opened", true);
+        } catch (Exception e) {
+            ret.put("opened", false);
+        }
+        call.resolve(ret);
+    }
+
+    // --- Estado de los permisos ---
+
     private boolean batteryExempt() {
         PowerManager power = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
         return power != null && power.isIgnoringBatteryOptimizations(getContext().getPackageName());
     }
 
+    /**
+     * No basta con el permiso: el usuario puede tenerlo concedido y haber
+     * desactivado las notificaciones de la app entera desde los ajustes, lo que
+     * silencia igualmente el resumen del despertar.
+     */
+    private boolean notificationsGranted() {
+        if (!NotificationManagerCompat.from(getContext()).areNotificationsEnabled()) return false;
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true;
+        return ContextCompat.checkSelfPermission(getContext(), "android.permission.POST_NOTIFICATIONS")
+            == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private boolean exactAlarmsAllowed() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true;
+        AlarmManager alarms = (AlarmManager) getContext().getSystemService(Context.ALARM_SERVICE);
+        return alarms != null && alarms.canScheduleExactAlarms();
+    }
+
+    /**
+     * ¿Sigue vivo el servicio?
+     *
+     * `getRunningServices` informa del proceso, no de que el servicio siga
+     * escuchando: tras una muerte silenciosa puede seguir apareciendo. El
+     * latido que el servicio refresca en cada arranque y en cada evento es la
+     * señal fiable, y sólo se acepta si es reciente —el vigilante lo toca cada
+     * 15 minutos, así que 45 sin noticias significa que algo lo paró.
+     */
     @SuppressWarnings("deprecation")
     private boolean serviceRunning() {
+        long aliveAt = prefs().getLong(SleepMonitorService.KEY_ALIVE_AT, 0L);
+        if (aliveAt > 0 && System.currentTimeMillis() - aliveAt > ALIVE_WINDOW_MS) return false;
+
         ActivityManager manager = (ActivityManager) getContext().getSystemService(Context.ACTIVITY_SERVICE);
         if (manager == null) return false;
         // getRunningServices sigue informando de los servicios de la propia

@@ -130,6 +130,24 @@ nivel de confianza. Toda sesión se puede confirmar, ajustar o descartar:
 - **estimada** — sólo uno de los dos extremos cae en la ventana nocturna.
 - **dudosa** — demasiado corto, demasiado largo, fuera de horas, o deducido del horario.
 
+**El aviso al despertar.** Una propuesta que espera a que abras la app es una
+propuesta que no ves: al despertarse nadie abre PerfectRest, y la noche se
+quedaba sin validar durante días, cuando ya no se recuerda si fue a las 23:40 o
+a la una. Por eso, en cuanto se cierra el hueco, el servicio lanza una
+notificación con la estimación —«Has dormido 7h 20m · De 23:40 a 07:00»— que
+abre la app en la ficha de confirmación. Se activa y desactiva desde Ajustes
+(«avisarme con la estimación al despertar») y viaja por un canal propio,
+`perfectrest-summary`, separado del canal mudo del servicio para que se pueda
+silenciar uno sin perder el otro.
+
+Lo emite el servicio nativo y no la capa web a propósito: a las siete de la
+mañana la app lleva horas cerrada y no hay ningún JavaScript vivo que pueda
+avisar. El filtro del servicio es laxo —el umbral mínimo y un extremo dentro de
+la ventana nocturna—; la evaluación fina (confianza, fusión de disparadores,
+corrección de bordes) sigue estando sólo en la capa web, porque duplicarla en
+Java sólo garantizaría que las dos acaben desincronizadas. La cifra del aviso
+es el hueco bruto; la que se guarda, la refinada.
+
 Los bordes se corrigen antes de proponerla: al inicio se suma la latencia (uno
 suelta el móvil antes de dormirse) y al final se restan 5 minutos (nadie coge el
 móvil al instante de despertar). La propuesta del horario se libra, porque ya
@@ -233,15 +251,41 @@ proyecto en Android Studio, `npm run android:open`.
 
 `android/local.properties` apunta al SDK de esta máquina y no debe compartirse.
 
-### Ajustes del sistema que conviene revisar
+### Los permisos son el punto débil de todo esto
 
-- **Permiso de notificaciones**: en Android 13+ hay que concederlo
-  explícitamente. La app lo pide en el onboarding y se puede reintentar desde
-  Ajustes. Sin él no hay recordatorios ni notificación del servicio.
-- **Optimización de batería**: si el sistema restringe la app de forma
-  agresiva puede detener el servicio de segundo plano y retrasar los avisos.
-  Conviene excluir PerfectRest de la optimización. La pantalla de Ajustes
-  muestra si el servicio sigue en marcha.
+Ninguno de los permisos que necesita la detección falla con un error. Si falta
+alguno, la app no se rompe: **simplemente deja de registrar noches**, que desde
+fuera es indistinguible de una noche en la que no dejaste ninguna señal. Ése era
+el fallo real —la detección parecía no funcionar sin que nada dijera por qué—, y
+por eso Ajustes abre con una tarjeta de diagnóstico que los recorre uno a uno,
+cada uno con su atajo directo a la pantalla del sistema que lo concede:
+
+| Requisito | Qué pasa sin él | Cómo se concede |
+| --- | --- | --- |
+| **Notificaciones** | No hay recordatorios, ni aviso al despertar, ni notificación del servicio | Diálogo en el onboarding; después, ajustes del sistema |
+| **Sin optimización de batería** | Android para el servicio de madrugada y se pierde la noche entera | Se pide en el onboarding y desde el diagnóstico |
+| **Alarmas exactas** | El vigilante se degrada a alarma inexacta, Doze la agrupa y el servicio puede no rearmarse en toda la noche | Pantalla «alarmas y recordatorios» |
+| **Servicio vivo** | No es un permiso: es el resultado de los tres anteriores | — |
+
+Tres detalles que hacían que esto fallara en silencio y ya no:
+
+- **Un permiso denegado dos veces no vuelve a preguntarse.** Android deja de
+  mostrar el diálogo a la segunda negativa, así que el botón «conceder permiso»
+  dejaba de hacer nada sin decirlo. Ahora, cuando ya no hay diálogo posible, el
+  botón lleva a la ficha de la app en los ajustes del sistema.
+- **Cada actualización apagaba la detección.** Instalar una versión nueva
+  detiene la app por completo y cancela sus alarmas, la del vigilante incluida.
+  Como PerfectRest se actualiza sola con cada push a `main`, el servicio se
+  quedaba muerto hasta que alguien volviera a abrir la app —y como no hay nada
+  visible que falle, podían pasar semanas. `BootReceiver` atiende ahora
+  `MY_PACKAGE_REPLACED` además del arranque del dispositivo.
+- **El estado del servicio mentía.** `start()` respondía «en marcha» sin
+  comprobar nada, y `getRunningServices` informa del proceso, no de que el
+  servicio siga escuchando. Ahora el servicio deja un latido en cada arranque y
+  en cada evento recibido, y se le da por muerto si lleva más de 45 minutos sin
+  tocarlo (el vigilante pasa cada 15). Todo lo que puede fallar por un permiso
+  —entrar en primer plano, programar la alarma exacta, publicar el aviso— queda
+  anotado y Ajustes lo muestra en vez de dejarlo morir en el log.
 
 ### Qué se ha comprobado en un dispositivo
 
