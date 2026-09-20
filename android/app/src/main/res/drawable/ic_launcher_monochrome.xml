@@ -1,16 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Silueta para los iconos temáticos de Android 13+: el sistema la recolorea,
-     así que va en blanco plano sobre transparente. -->
+     así que va en blanco plano sobre transparente. Mismo encaje que
+     `ic_launcher_foreground` (60dp de los 108): el icono temático se dibuja
+     dentro de un círculo aún más ajustado que la máscara normal, así que es el
+     que peor lleva una marca pegada al borde. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
     <group
-        android:scaleX="0.92715"
-        android:scaleY="0.92715"
-        android:translateX="7.64"
-        android:translateY="7.64">
+        android:scaleX="0.79470"
+        android:scaleY="0.79470"
+        android:translateX="14.265"
+        android:translateY="14.265">
         <path
             android:pathData="M44.1,16.52A34,34 0 1 0 84,50"
             android:strokeColor="#FFFFFF"

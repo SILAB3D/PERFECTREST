@@ -1,7 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Capa frontal del icono adaptativo. El dibujo vive en un lienzo de 100x100
      (el mismo que `public/logo.svg`) y el grupo lo encaja en los 108dp del
-     icono ocupando 70dp, dentro de la zona segura que Android garantiza. -->
+     icono ocupando 60dp: la línea guía de Material para una marca circular.
+
+     Antes ocupaba 70dp. Eso cabe por los pelos en la zona segura de 72dp que
+     Android promete, pero no deja margen para nada más: el lanzador aplica
+     paralaje al mover el icono, los iconos temáticos de Android 13 lo
+     reencuadran, y varias máscaras de fabricante recortan por debajo de los
+     72dp. Con 60dp la marca respira y ninguna máscara le come el arco. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
@@ -9,10 +15,10 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
     <group
-        android:scaleX="0.92715"
-        android:scaleY="0.92715"
-        android:translateX="7.64"
-        android:translateY="7.64">
+        android:scaleX="0.79470"
+        android:scaleY="0.79470"
+        android:translateX="14.265"
+        android:translateY="14.265">
         <path
             android:pathData="M44.1,16.52A34,34 0 1 0 84,50"
             android:strokeWidth="7.5"

@@ -4,9 +4,13 @@
      PNG por densidad y orientación que traía la plantilla. -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:drawable="@color/splash_background"/>
+    <!-- 192dp y no 128: el drawable lleva dentro el margen que Android 12+
+         necesita para su recorte circular, así que hay que pedirlo 1,5 veces
+         más grande para que la marca salga del mismo tamaño que antes. Aquí
+         no hay recorte, sólo se centra. -->
     <item
         android:gravity="center"
-        android:width="128dp"
-        android:height="128dp"
+        android:width="192dp"
+        android:height="192dp"
         android:drawable="@drawable/ic_splash_logo"/>
 </layer-list>

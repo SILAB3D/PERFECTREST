@@ -69,13 +69,16 @@ const DENSITIES = [
 const targets = [];
 for (const [density, k] of DENSITIES) {
   const dir = resolve(res, `mipmap-${density}`);
-  // 0.66 deja el margen que Android espera alrededor del icono heredado; el
-  // adaptativo usa 0.648 de 108dp (= 70dp) para no salirse de la zona segura.
-  targets.push({ file: resolve(dir, 'ic_launcher.png'), svg: canvas(48 * k, 0.66, 'square') });
-  targets.push({ file: resolve(dir, 'ic_launcher_round.png'), svg: canvas(48 * k, 0.66, 'circle') });
+  // 0.60 deja el margen que Android espera alrededor del icono heredado; el
+  // adaptativo usa 0.5556 de 108dp (= 60dp), la línea guía de Material para
+  // una marca circular. Antes eran 0.66 y 0.648 (= 70dp), que cabe por los
+  // pelos en la zona segura de 72dp y no deja nada para el paralaje del
+  // lanzador ni para las máscaras de fabricante que recortan por debajo.
+  targets.push({ file: resolve(dir, 'ic_launcher.png'), svg: canvas(48 * k, 0.6, 'square') });
+  targets.push({ file: resolve(dir, 'ic_launcher_round.png'), svg: canvas(48 * k, 0.6, 'circle') });
   targets.push({
     file: resolve(dir, 'ic_launcher_foreground.png'),
-    svg: canvas(108 * k, 0.648, 'none'),
+    svg: canvas(108 * k, 0.5556, 'none'),
   });
 }
 
@@ -83,13 +86,30 @@ if (process.argv.includes('--preview')) {
   targets.push({ file: resolve(root, 'screenshots/icon-preview.png'), svg: preview() });
 }
 
+/**
+ * El icono adaptativo tal y como lo va a ver el usuario: los 108dp recortados
+ * al círculo de 72dp de la zona segura.
+ *
+ * Mirar el adaptativo suelto es lo que dejó pasar que la marca midiera 70 de
+ * esos 72dp; enmascarado se ve de un vistazo cuánto aire le queda.
+ */
+function masked(size) {
+  const safe = (size * 72) / 108;
+  const inner = canvas(size, 0.5556, 'none').replace('<svg', '<svg x="0" y="0"');
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+<defs><clipPath id="mask"><circle cx="${size / 2}" cy="${size / 2}" r="${safe / 2}"/></clipPath></defs>
+<g clip-path="url(#mask)"><circle cx="${size / 2}" cy="${size / 2}" r="${safe / 2}" fill="${BG}"/>${inner}</g></svg>`;
+}
+
 /** Hoja de contacto para revisar el icono a los tamaños en que se usa de verdad. */
 function preview() {
   const shots = [
-    ['Lanzador 192', canvas(192, 0.66, 'square')],
-    ['Redondo 192', canvas(192, 0.66, 'circle')],
-    ['Lanzador 48', canvas(48, 0.66, 'square')],
-    ['Adaptativo', canvas(192, 0.648, 'none')],
+    ['Lanzador 192', canvas(192, 0.6, 'square')],
+    ['Redondo 192', canvas(192, 0.6, 'circle')],
+    ['Lanzador 48', canvas(48, 0.6, 'square')],
+    // Con la máscara circular de 72dp encima: es la comprobación que faltaba,
+    // porque el adaptativo suelto no enseña por dónde lo van a recortar.
+    ['Adaptativo enmascarado', masked(192)],
   ];
   const cell = (label, svg, i) => {
     const x = 40 + (i % 4) * 240;

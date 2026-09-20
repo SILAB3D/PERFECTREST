@@ -242,6 +242,24 @@ sólo dos trazados. De ahí salen los tres usos:
 | Icono de notificación | [`drawable/ic_stat_icon.xml`](android/app/src/main/res/drawable/ic_stat_icon.xml) | Silueta blanca sobre transparente, como exige Android |
 | Favicon | [`public/moon.svg`](public/moon.svg) | La marca sobre la baldosa oscura |
 
+**Cuánto ocupa la marca.** Android recorta los iconos y cada sitio lo hace con
+una máscara distinta, así que el tamaño no es una cuestión estética sino de no
+perder el arco por los lados:
+
+- **Lanzador (108dp):** la marca ocupa **60dp**, la línea guía de Material para
+  una silueta circular. La zona segura son 72dp, pero llenarla entera no deja
+  margen para el paralaje del lanzador, para el reencuadre de los iconos
+  temáticos ni para las máscaras de fabricante, que recortan por debajo.
+- **Arranque de Android 12+:** el sistema **recorta el icono a un círculo de
+  dos tercios del drawable**. Por eso `ic_splash_logo` lleva el margen dentro
+  (lienzo 150 para un dibujo de 100) y `splash.xml`, que no recorta, lo pide
+  1,5 veces más grande para compensar.
+- **Heredado y favicon:** 60% de una baldosa que ya trae su propio fondo.
+
+`npm run icons --preview` deja en `screenshots/icon-preview.png` una hoja de
+contacto con el adaptativo **ya enmascarado**, que es la única forma de ver por
+dónde lo van a cortar.
+
 Casi todo es vectorial: un cambio en el dibujo se propaga editando los trazados.
 Los únicos mapas de bits son los `mipmap-*` de respaldo, y se rasterizan con el
 Chrome del sistema:

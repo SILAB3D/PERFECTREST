@@ -1,11 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Marca centrada de la pantalla de arranque. Sin fondo: lo pone `splash.xml`. -->
+<!-- Marca centrada de la pantalla de arranque. Sin fondo: lo pone `splash.xml`.
+
+     El lienzo es 1,5 veces el dibujo a propósito. Desde Android 12 la ventana
+     de arranque la dibuja el sistema y **recorta el icono a un círculo de dos
+     tercios del drawable**: con el dibujo a sangre, la marca medía 145dp
+     dentro de un círculo visible de 128dp y el arco salía cortado por los
+     lados. Con el margen, la marca queda en 145dp dentro de 192dp visibles.
+
+     Quien lo use sin ese recorte —`splash.xml`, para Android 11 y anteriores—
+     tiene que pedirlo 1,5 veces más grande para compensar el aire. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
-    android:width="192dp"
-    android:height="192dp"
-    android:viewportWidth="100"
-    android:viewportHeight="100">
+    android:width="288dp"
+    android:height="288dp"
+    android:viewportWidth="150"
+    android:viewportHeight="150">
+  <group android:translateX="25" android:translateY="25">
     <path
         android:pathData="M44.1,16.52A34,34 0 1 0 84,50"
         android:strokeWidth="7.5"
@@ -33,4 +43,5 @@
             </gradient>
         </aapt:attr>
     </path>
+  </group>
 </vector>
