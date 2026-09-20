@@ -151,6 +151,34 @@ export function TimeField({
   );
 }
 
+/** Desplegable con el mismo aspecto que el campo de hora, para filas de ajustes. */
+export function SelectField<T extends string>({
+  value,
+  options,
+  onChange,
+  label,
+}: {
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (v: T) => void;
+  label?: string;
+}) {
+  return (
+    <select
+      className="selectfield"
+      value={value}
+      aria-label={label}
+      onChange={(e) => onChange(e.target.value as T)}
+    >
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 export type PillTone = 'primary' | 'mint' | 'amber' | 'rose' | 'muted';
 
 export function Pill({ tone = 'muted', children }: { tone?: PillTone; children: ReactNode }) {

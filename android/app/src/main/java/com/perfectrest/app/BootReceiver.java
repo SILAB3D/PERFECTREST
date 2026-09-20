@@ -43,6 +43,11 @@ public class BootReceiver extends BroadcastReceiver {
         // Sólo se reanuda si el usuario lo tenía activado.
         if (!prefs.getBoolean(SleepMonitorService.KEY_ENABLED, false)) return;
 
+        // Se anota antes de intentarlo: si el arranque falla, en el registro
+        // queda el intento seguido del error, que es lo que permite ver que la
+        // alarma sí disparaba y lo que fallaba era arrancar.
+        SleepMonitorService.logEvent(context, null, "service", "rearme (" + shortName(action) + ")");
+
         Intent service = new Intent(context, SleepMonitorService.class);
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -54,14 +59,20 @@ public class BootReceiver extends BroadcastReceiver {
             // Android 12+ puede rechazar el arranque desde segundo plano si la
             // app no está en la lista blanca de batería. Se anota para que
             // Ajustes lo explique, y se reintenta en el siguiente ciclo.
-            prefs.edit()
-                .putString(SleepMonitorService.KEY_LAST_ERROR,
-                    "Android no dejó rearrancar el servicio en segundo plano. "
-                        + "Desactiva la optimización de batería para PerfectRest.")
-                .apply();
+            String message = "Android no dejó rearrancar el servicio en segundo plano. "
+                + "Desactiva la optimización de batería para PerfectRest.";
+            prefs.edit().putString(SleepMonitorService.KEY_LAST_ERROR, message).apply();
+            SleepMonitorService.logEvent(context, null, "error", message);
         }
         // La alarma se reprograma pase lo que pase: tras una reinstalación no
         // queda ninguna pendiente, y si el arranque falló hay que reintentarlo.
         SleepMonitorService.scheduleWatchdog(context);
+    }
+
+    /** Nombre corto de la causa del rearme, para que la línea del registro se lea. */
+    private static String shortName(String action) {
+        if (SleepMonitorService.ACTION_RESTART.equals(action)) return "vigilante";
+        if (Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)) return "actualización";
+        return "arranque del móvil";
     }
 }

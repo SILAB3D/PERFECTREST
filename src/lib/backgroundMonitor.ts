@@ -1,5 +1,5 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
-import type { TriggerId } from './types';
+import type { TriggerEvent, TriggerId } from './types';
 
 /**
  * Acceso al servicio nativo de monitorización en segundo plano.
@@ -79,6 +79,14 @@ interface SleepMonitorPlugin {
   getGaps(): Promise<{ gaps: NativeGap[]; lastUsedAt: number; screenOffAt: number }>;
   /** Borra los huecos ya procesados; `until` evita perder los recién llegados. */
   clearGaps(options: { until: number }): Promise<void>;
+  /** Registro de eventos del servicio, para el diagnóstico de Ajustes. */
+  getEvents(): Promise<{ events: TriggerEvent[] }>;
+  clearEvents(): Promise<void>;
+  /** Inyecta un hueco de prueba que recorre la tubería real de detección. */
+  simulateGap(options: { trigger: TriggerId; minutesAgo: number }): Promise<{
+    start: number;
+    end: number;
+  }>;
   /** Abre el diálogo del sistema para eximir a la app del ahorro de batería. */
   requestBatteryExemption(): Promise<{ requested: boolean }>;
   /** Abre la pantalla de «alarmas y recordatorios» del sistema. */
@@ -242,5 +250,49 @@ export async function clearGaps(until: number): Promise<void> {
     await SleepMonitor.clearGaps({ until });
   } catch {
     /* sin servicio no hay nada que limpiar */
+  }
+}
+
+/**
+ * Lee el registro de eventos del servicio.
+ *
+ * No se borra al leerlo, a diferencia de los huecos: el registro es para
+ * mirarlo, y vaciarlo en cada apertura dejaría al usuario sin ver la noche
+ * anterior justo cuando va a preguntarse por qué no se detectó.
+ */
+export async function readNativeEvents(): Promise<TriggerEvent[]> {
+  if (!isBackgroundAvailable()) return [];
+  try {
+    const { events } = await SleepMonitor.getEvents();
+    return (events ?? []).map((e) => ({ ...e, native: true }));
+  } catch {
+    // Una versión anterior del plugin no conoce `getEvents`.
+    return [];
+  }
+}
+
+export async function clearNativeEvents(): Promise<void> {
+  if (!isBackgroundAvailable()) return;
+  try {
+    await SleepMonitor.clearEvents();
+  } catch {
+    /* sin servicio no hay registro que limpiar */
+  }
+}
+
+/**
+ * Encola un hueco de prueba para un disparador concreto.
+ *
+ * Devuelve false si no hay servicio nativo: en el navegador no hay cola donde
+ * inyectarlo, y fingir que sí la hay daría por buena una prueba que no ha
+ * comprobado nada.
+ */
+export async function simulateGap(trigger: TriggerId, minutesAgo: number): Promise<boolean> {
+  if (!isBackgroundAvailable()) return false;
+  try {
+    await SleepMonitor.simulateGap({ trigger, minutesAgo });
+    return true;
+  } catch {
+    return false;
   }
 }

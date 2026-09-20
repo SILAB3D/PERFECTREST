@@ -199,6 +199,72 @@ public class SleepMonitorPlugin extends Plugin {
     }
 
     /**
+     * Registro de eventos del servicio: cada señal recibida, cada hueco
+     * encolado y cada descarte con su motivo.
+     *
+     * Es lo que convierte «la app no detecta nada» en una pregunta con
+     * respuesta. Sin él, un servicio que Android mató a las dos de la mañana y
+     * una noche en la que de verdad no llegó ninguna señal producen el mismo
+     * resultado visible: nada.
+     */
+    @PluginMethod
+    public void getEvents(PluginCall call) {
+        JSObject ret = new JSObject();
+        try {
+            ret.put("events", new JSONArray(prefs().getString(SleepMonitorService.KEY_EVENTS, "[]")));
+        } catch (JSONException e) {
+            ret.put("events", new JSONArray());
+        }
+        call.resolve(ret);
+    }
+
+    /** Vacía el registro. Los huecos pendientes no se tocan. */
+    @PluginMethod
+    public void clearEvents(PluginCall call) {
+        prefs().edit().putString(SleepMonitorService.KEY_EVENTS, "[]").apply();
+        call.resolve();
+    }
+
+    /**
+     * Inyecta un hueco de prueba, como si el disparador indicado lo hubiera
+     * abierto hace `minutesAgo` minutos y lo acabara de cerrar.
+     *
+     * Existe porque la alternativa para comprobar un disparador era esperar
+     * una noche entera por intento, y con cuatro disparadores y un umbral de
+     * tres horas eso no es comprobar nada. El hueco recorre exactamente el
+     * mismo camino que uno real —cola, evaluación en la capa web, propuesta de
+     * sesión— así que lo que se prueba es la tubería completa, no una maqueta.
+     *
+     * No simula el evento de Android: eso no se puede hacer desde la app, y
+     * fingirlo escondería justo el fallo que importa (que el evento no llegue).
+     */
+    @PluginMethod
+    public void simulateGap(PluginCall call) {
+        String trigger = call.getString("trigger", SleepMonitorService.TRIGGER_SCREEN);
+        int minutesAgo = call.getInt("minutesAgo", 480);
+
+        boolean known = false;
+        for (String id : SleepMonitorService.NATIVE_TRIGGERS) {
+            if (id.equals(trigger)) known = true;
+        }
+        if (!known) {
+            call.reject("Disparador desconocido: " + trigger);
+            return;
+        }
+
+        long end = System.currentTimeMillis();
+        long start = end - minutesAgo * 60_000L;
+        SleepMonitorService.logEvent(getContext(), trigger, "service",
+            "prueba manual desde Ajustes");
+        SleepMonitorService.enqueueGap(getContext(), start, end, trigger, trigger);
+
+        JSObject ret = new JSObject();
+        ret.put("start", start);
+        ret.put("end", end);
+        call.resolve(ret);
+    }
+
+    /**
      * Abre el diálogo del sistema para eximir la app del ahorro de batería.
      * Es la diferencia entre que el servicio sobreviva la noche o que Android
      * lo pare a las pocas horas y no se detecte nada.

@@ -37,17 +37,31 @@ import java.util.Locale;
  * en primer plano: es la única forma de seguir escuchando esos eventos
  * mientras el usuario duerme y la app está cerrada.
  *
- * Se registran dos disparadores independientes, cada uno activable desde los
- * ajustes de la app:
+ * Se registran cuatro disparadores independientes, cada uno activable desde
+ * los ajustes de la app:
  *
- *   screen   SCREEN_OFF        -> USER_PRESENT        (deja de usarlo / vuelve)
- *   charger  POWER_CONNECTED   -> POWER_DISCONNECTED  (lo enchufa / lo suelta)
+ *   screen   SCREEN_OFF            -> USER_PRESENT            (lo suelta / vuelve)
+ *   charger  POWER_CONNECTED       -> POWER_DISCONNECTED      (lo enchufa / lo suelta)
+ *   idle     entra en Doze         -> sale de Doze            (el sistema lo da por quieto)
+ *   dnd      «No molestar» activo  -> «No molestar» apagado   (se va a dormir)
+ *
+ * Van por separado porque cada uno se rompe por su lado: la pantalla no dice
+ * nada de quien duerme sin bloqueo seguro, el cargador no sirve a quien no
+ * carga de noche, Doze no llega si el móvil recibe notificaciones toda la
+ * madrugada y «No molestar» sólo existe si el usuario lo usa. Lo que uno
+ * pierde, otro lo cubre; y cuando dos coinciden sobre la misma noche, la capa
+ * web propone la sesión con más confianza.
  *
  * El hueco entre los dos extremos es tiempo real sin usar el móvil, mucho más
  * preciso que deducirlo de cuándo se abre la app. Cuando supera el umbral
  * configurado se encola, etiquetado con el disparador que lo abrió y el que lo
  * cerró, para que la capa web lo evalúe como posible sesión de sueño. El
  * servicio no decide nada, sólo mide.
+ *
+ * Todo lo que ocurre —cada señal recibida, cada hueco encolado y cada descarte
+ * con su motivo— queda además en un registro circular que la app muestra en
+ * Ajustes. Sin él, «no se detectó nada» y «el servicio llevaba semanas muerto»
+ * se ven exactamente igual desde fuera.
  *
  * Mantenerse vivo es la otra mitad del trabajo: START_STICKY no cubre que el
  * usuario deslice la app fuera de recientes ni que el sistema mate el proceso
@@ -68,10 +82,10 @@ public class SleepMonitorService extends Service {
     public static final String KEY_GAPS = "pendingGaps";
     public static final String KEY_ENABLED = "serviceEnabled";
     public static final String KEY_MIN_GAP = "minGapMinutes";
-    public static final String KEY_SCREEN_OFF_AT = "screenOffAt";
-    public static final String KEY_PLUGGED_AT = "pluggedAt";
     /** Disparadores activos, separados por comas: "screen,charger". */
     public static final String KEY_TRIGGERS = "triggers";
+    /** Registro circular de eventos, en JSON, que la app lee y muestra. */
+    public static final String KEY_EVENTS = "triggerEvents";
 
     /** Instante en que el servicio entró en primer plano por última vez. */
     public static final String KEY_STARTED_AT = "startedAt";
@@ -95,6 +109,28 @@ public class SleepMonitorService extends Service {
 
     public static final String TRIGGER_SCREEN = "screen";
     public static final String TRIGGER_CHARGER = "charger";
+    public static final String TRIGGER_IDLE = "idle";
+    public static final String TRIGGER_DND = "dnd";
+
+    /** Los cuatro disparadores que este servicio sabe escuchar. */
+    public static final String[] NATIVE_TRIGGERS = {
+        TRIGGER_SCREEN, TRIGGER_CHARGER, TRIGGER_IDLE, TRIGGER_DND
+    };
+
+    /**
+     * Instante en que cada disparador abrió su hueco, uno por disparador.
+     *
+     * Antes había una clave por señal (`screenOffAt`, `pluggedAt`), lo que
+     * obligaba a duplicar el par abrir/cerrar cada vez que se añadía una
+     * nueva. Con la clave derivada del identificador, añadir un disparador es
+     * añadir su acción al filtro y nada más.
+     */
+    public static String openKey(String trigger) {
+        return "openAt." + trigger;
+    }
+
+    /** Alias histórico: el hueco abierto por la pantalla, que el plugin expone. */
+    public static final String KEY_SCREEN_OFF_AT = "openAt." + TRIGGER_SCREEN;
 
     /** Acción con la que la alarma de vigilancia vuelve a levantar el servicio. */
     public static final String ACTION_RESTART = "com.perfectrest.app.RESTART_MONITOR";
@@ -106,6 +142,8 @@ public class SleepMonitorService extends Service {
     private static final int SUMMARY_NOTIFICATION_ID = 4712;
     /** Tope de huecos guardados: si la app no se abre en semanas, no crece sin fin. */
     private static final int MAX_GAPS = 60;
+    /** Tope del registro de eventos. Cubre varios días sin crecer sin fin. */
+    private static final int MAX_EVENTS = 200;
     /** Cada cuánto comprueba la alarma que el servicio sigue vivo. */
     private static final long WATCHDOG_INTERVAL_MS = 15 * 60_000L;
 
@@ -153,9 +191,14 @@ public class SleepMonitorService extends Service {
     public void onDestroy() {
         unregisterDeviceReceiver();
         // Si el servicio muere sin que el usuario lo haya apagado, la alarma
-        // pendiente lo devolverá a la vida en el próximo ciclo.
+        // pendiente lo devolverá a la vida en el próximo ciclo. Que se anote
+        // es la única forma de ver después cuántas veces lo mató el sistema
+        // durante la noche, que es la causa más común de no detectar nada.
         if (prefs().getBoolean(KEY_ENABLED, false)) {
+            logEvent(this, null, "service", "detenido por el sistema; se rearma en 5 s");
             scheduleRestart(this, 5_000L);
+        } else {
+            logEvent(this, null, "service", "detenido por el usuario");
         }
         super.onDestroy();
     }
@@ -180,10 +223,56 @@ public class SleepMonitorService extends Service {
     /** Deja constancia de un fallo para que Ajustes pueda explicarlo. */
     private void recordError(String message) {
         prefs().edit().putString(KEY_LAST_ERROR, message).apply();
+        logEvent(this, null, "error", message);
     }
 
     private void clearError() {
         prefs().edit().remove(KEY_LAST_ERROR).apply();
+    }
+
+    // --- Registro de eventos ---
+
+    /**
+     * Anota un evento en el registro circular.
+     *
+     * Es estático y toma el contexto porque también lo usan el receptor de
+     * arranque y el plugin: el rearranque fallido tras una actualización es
+     * justo el caso que hay que poder leer después, y ahí el servicio no
+     * existe todavía.
+     *
+     * Escribe siempre, aunque el disparador esté apagado o falte un permiso:
+     * el registro debe poder explicar por qué no pasó nada, y para eso tiene
+     * que anotar precisamente lo que no pasó.
+     */
+    static void logEvent(Context context, String trigger, String kind, String detail) {
+        SharedPreferences p =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+
+        JSONArray events;
+        try {
+            events = new JSONArray(p.getString(KEY_EVENTS, "[]"));
+        } catch (JSONException e) {
+            events = new JSONArray();
+        }
+
+        try {
+            JSONObject event = new JSONObject();
+            event.put("at", System.currentTimeMillis());
+            // JSONObject.put(String, null) borra la clave, que es justo lo que
+            // se quiere: la web lee el disparador ausente como `null`.
+            event.put("trigger", trigger);
+            event.put("kind", kind);
+            if (detail != null) event.put("detail", detail);
+            event.put("native", true);
+            events.put(event);
+        } catch (JSONException e) {
+            return;
+        }
+
+        while (events.length() > MAX_EVENTS) {
+            events.remove(0);
+        }
+        p.edit().putString(KEY_EVENTS, events.toString()).apply();
     }
 
     // --- Ciclo de vida en primer plano ---
@@ -207,6 +296,7 @@ public class SleepMonitorService extends Service {
                 .putLong(KEY_ALIVE_AT, now)
                 .apply();
             clearError();
+            logEvent(this, null, "service", "en primer plano");
         } catch (Exception e) {
             // En Android 12+ arrancar un servicio en primer plano desde segundo
             // plano está prohibido salvo exención. Sin exención de batería y sin
@@ -295,6 +385,14 @@ public class SleepMonitorService extends Service {
             filter.addAction(Intent.ACTION_POWER_DISCONNECTED);
             any = true;
         }
+        if (triggerOn(TRIGGER_IDLE)) {
+            filter.addAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED);
+            any = true;
+        }
+        if (triggerOn(TRIGGER_DND)) {
+            filter.addAction(NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED);
+            any = true;
+        }
         if (!any) {
             recordError("Ningún disparador del dispositivo está activo: el servicio no escucha nada.");
             return;
@@ -312,6 +410,8 @@ public class SleepMonitorService extends Service {
         } else {
             registerReceiver(receiver, filter);
         }
+
+        logEvent(this, null, "service", "escuchando: " + prefs().getString(KEY_TRIGGERS, TRIGGER_SCREEN));
     }
 
     private void handleEvent(String action, long now) {
@@ -323,16 +423,13 @@ public class SleepMonitorService extends Service {
         switch (action) {
             case Intent.ACTION_SCREEN_OFF:
                 // Momento en que el uso termina: candidato a inicio del hueco.
-                prefs().edit()
-                    .putLong(KEY_SCREEN_OFF_AT, now)
-                    .putLong(KEY_LAST_USED, now)
-                    .apply();
+                openGap(TRIGGER_SCREEN, now, true);
                 break;
 
             case Intent.ACTION_USER_PRESENT:
                 // Desbloqueo real: la señal más fiable de que el usuario ha
                 // vuelto al dispositivo.
-                closeScreenGap(now);
+                closeGap(TRIGGER_SCREEN, now, true);
                 break;
 
             case Intent.ACTION_SCREEN_ON:
@@ -341,15 +438,35 @@ public class SleepMonitorService extends Service {
                 // de vuelta disponible. Con bloqueo seguro se ignora, porque la
                 // pantalla puede encenderse sola por una notificación sin que
                 // el usuario coja el móvil.
-                if (!keyguardSecure()) closeScreenGap(now);
+                if (!keyguardSecure()) closeGap(TRIGGER_SCREEN, now, true);
                 break;
 
             case Intent.ACTION_POWER_CONNECTED:
-                prefs().edit().putLong(KEY_PLUGGED_AT, now).apply();
+                // No toca `lastUsedAt`: enchufar el móvil no implica usarlo, y
+                // confundirlo con uso real falsearía el hueco de la pantalla.
+                openGap(TRIGGER_CHARGER, now, false);
                 break;
 
             case Intent.ACTION_POWER_DISCONNECTED:
-                closeChargerGap(now);
+                closeGap(TRIGGER_CHARGER, now, false);
+                break;
+
+            case PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED:
+                // Doze: el sistema da el móvil por quieto tras un rato sin
+                // pantalla ni movimiento, y sale de golpe en cuanto se toca.
+                // Es más tardío que SCREEN_OFF —Android tarda en decidirlo—
+                // pero llega aunque no haya bloqueo de pantalla, que es
+                // exactamente el hueco que deja el disparador de pantalla.
+                if (deviceIdle()) openGap(TRIGGER_IDLE, now, false);
+                else closeGap(TRIGGER_IDLE, now, true);
+                break;
+
+            case NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED:
+                // «No molestar» activo: la única señal de las cuatro que
+                // expresa intención y no consecuencia. Quien lo enciende al
+                // acostarse está diciendo la hora a la que se acuesta.
+                if (dndActive()) openGap(TRIGGER_DND, now, false);
+                else closeGap(TRIGGER_DND, now, false);
                 break;
 
             default:
@@ -358,33 +475,73 @@ public class SleepMonitorService extends Service {
     }
 
     /**
-     * Cierra el hueco abierto por la pantalla. Si superó el umbral, se encola;
-     * en cualquier caso se marca el instante como último uso y se limpia el
-     * candidato, de modo que un segundo desbloqueo seguido no vuelva a encolar
-     * la misma noche.
+     * Marca el principio de un hueco para un disparador.
+     *
+     * Si ya había uno abierto no se pisa: el primer borde es el bueno. Una
+     * pantalla que se enciende y se apaga sola de madrugada no debe reiniciar
+     * el reloj de la noche.
      */
-    private void closeScreenGap(long now) {
-        long offAt = prefs().getLong(KEY_SCREEN_OFF_AT, 0L);
-        if (offAt > 0 && now - offAt >= minGapMs()) {
-            enqueueGap(offAt, now, TRIGGER_SCREEN, TRIGGER_SCREEN);
-        }
-        prefs().edit()
-            .putLong(KEY_LAST_USED, now)
-            .putLong(KEY_SCREEN_OFF_AT, 0L)
-            .apply();
+    private void openGap(String trigger, long now, boolean marksUse) {
+        String key = openKey(trigger);
+        // No se anota: con bloqueo seguro, una pantalla que se enciende y se
+        // apaga sola por cada notificación repetiría esta línea decenas de
+        // veces en una noche y expulsaría del registro lo que sí importa.
+        if (prefs().getLong(key, 0L) > 0) return;
+
+        SharedPreferences.Editor edit = prefs().edit().putLong(key, now);
+        if (marksUse) edit.putLong(KEY_LAST_USED, now);
+        edit.apply();
+
+        logEvent(this, trigger, "open", null);
     }
 
     /**
-     * Cierra el hueco abierto por el cargador. No toca `lastUsedAt`: enchufar o
-     * desenchufar el móvil no implica usarlo, y confundirlo con uso real
-     * falsearía el hueco de la pantalla.
+     * Cierra el hueco de un disparador. Si superó el umbral se encola; si no,
+     * se descarta dejando dicho por qué, que es la mitad del valor del
+     * registro: un hueco de 40 minutos descartado demuestra que la señal
+     * llega, y que lo que falla es el umbral o la hora, no la escucha.
+     *
+     * `marksUse` distingue las señales que implican que el usuario ha cogido
+     * el móvil (desbloquear, salir de Doze) de las que no (desenchufar el
+     * cargable, apagar «No molestar» desde otro sitio).
      */
-    private void closeChargerGap(long now) {
-        long pluggedAt = prefs().getLong(KEY_PLUGGED_AT, 0L);
-        if (pluggedAt > 0 && now - pluggedAt >= minGapMs()) {
-            enqueueGap(pluggedAt, now, TRIGGER_CHARGER, TRIGGER_CHARGER);
+    private void closeGap(String trigger, long now, boolean marksUse) {
+        String key = openKey(trigger);
+        long openedAt = prefs().getLong(key, 0L);
+
+        // Sin hueco abierto no hay nada que contar, y anotarlo repetiría una
+        // línea por cada desbloqueo: con el bloqueo por deslizamiento,
+        // SCREEN_ON ya cerró el hueco cuando llega USER_PRESENT.
+        if (openedAt > 0) {
+            long elapsed = now - openedAt;
+            logEvent(this, trigger, "close", "tras " + formatDuration(elapsed));
+            if (elapsed >= minGapMs()) {
+                enqueueGap(openedAt, now, trigger, trigger);
+            } else {
+                logEvent(this, trigger, "discard",
+                    formatDuration(elapsed) + " · por debajo del mínimo de "
+                        + formatDuration(minGapMs()));
+            }
         }
-        prefs().edit().putLong(KEY_PLUGGED_AT, 0L).apply();
+
+        SharedPreferences.Editor edit = prefs().edit().putLong(key, 0L);
+        if (marksUse) edit.putLong(KEY_LAST_USED, now);
+        edit.apply();
+    }
+
+    /** ¿Está el sistema en reposo profundo ahora mismo? */
+    private boolean deviceIdle() {
+        PowerManager power = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        return power != null && power.isDeviceIdleMode();
+    }
+
+    /** ¿Hay algún filtro de interrupciones activo («No molestar», prioridad, alarmas)? */
+    private boolean dndActive() {
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager == null) return false;
+        int filter = manager.getCurrentInterruptionFilter();
+        return filter != NotificationManager.INTERRUPTION_FILTER_ALL
+            && filter != NotificationManager.INTERRUPTION_FILTER_UNKNOWN;
     }
 
     private long minGapMs() {
@@ -398,14 +555,21 @@ public class SleepMonitorService extends Service {
      * subestima la inactividad, pero no la pierde entera.
      */
     private void primeScreenState() {
-        if (!triggerOn(TRIGGER_SCREEN)) return;
-        if (prefs().getLong(KEY_SCREEN_OFF_AT, 0L) > 0) return;
-
+        long now = System.currentTimeMillis();
         PowerManager power = (PowerManager) getSystemService(Context.POWER_SERVICE);
-        if (power == null) return;
 
-        if (!power.isInteractive()) {
-            prefs().edit().putLong(KEY_SCREEN_OFF_AT, System.currentTimeMillis()).apply();
+        if (triggerOn(TRIGGER_SCREEN) && power != null && !power.isInteractive()) {
+            openGap(TRIGGER_SCREEN, now, false);
+        }
+        // Mismo razonamiento para los otros dos disparadores de estado: Doze y
+        // «No molestar» son condiciones continuas, no instantes, así que al
+        // arrancar hay que mirar en cuál está el sistema en vez de esperar un
+        // cambio que ya ocurrió.
+        if (triggerOn(TRIGGER_IDLE) && deviceIdle()) {
+            openGap(TRIGGER_IDLE, now, false);
+        }
+        if (triggerOn(TRIGGER_DND) && dndActive()) {
+            openGap(TRIGGER_DND, now, false);
         }
     }
 
@@ -417,7 +581,19 @@ public class SleepMonitorService extends Service {
 
     /** Añade un hueco de inactividad a la cola que consumirá la capa web. */
     private void enqueueGap(long start, long end, String startTrigger, String endTrigger) {
-        SharedPreferences p = prefs();
+        enqueueGap(this, start, end, startTrigger, endTrigger);
+        maybeNotifySummary(start, end);
+    }
+
+    /**
+     * Encola un hueco. Es estático para que el plugin pueda inyectar uno de
+     * prueba sin el servicio delante: probar los disparadores esperando una
+     * noche entera por intento no es probarlos.
+     */
+    static void enqueueGap(
+        Context context, long start, long end, String startTrigger, String endTrigger
+    ) {
+        SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         JSONArray gaps;
         try {
             gaps = new JSONArray(p.getString(KEY_GAPS, "[]"));
@@ -445,7 +621,8 @@ public class SleepMonitorService extends Service {
             .putLong(KEY_LAST_GAP_AT, end)
             .apply();
 
-        maybeNotifySummary(start, end);
+        logEvent(context, endTrigger, "gap", formatDuration(end - start)
+            + " · de " + clock(start) + " a " + clock(end));
     }
 
     // --- Aviso con la estimación del sueño al despertar ---
@@ -520,7 +697,7 @@ public class SleepMonitorService extends Service {
     }
 
     /** Mismo formato que `formatDuration` en la capa web: "7h 20m", "7h", "45m". */
-    private String formatDuration(long ms) {
+    static String formatDuration(long ms) {
         long total = Math.max(0L, Math.round(ms / 60_000.0));
         long h = total / 60;
         long m = total % 60;
@@ -529,7 +706,7 @@ public class SleepMonitorService extends Service {
         return h + "h " + m + "m";
     }
 
-    private String clock(long ts) {
+    static String clock(long ts) {
         Calendar cal = Calendar.getInstance();
         cal.setTimeInMillis(ts);
         return String.format(Locale.getDefault(), "%02d:%02d",

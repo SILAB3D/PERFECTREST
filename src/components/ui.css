@@ -181,6 +181,24 @@
 
 .timefield:hover { border-color: var(--primary); }
 
+/* Desplegable compacto, para elegir dentro de una fila sin romperla. */
+.selectfield {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2) var(--sp-3);
+  min-width: 0;
+  max-width: 100%;
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: var(--text);
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] .selectfield { color-scheme: light; }
+
+.selectfield:hover { border-color: var(--primary); }
+
 /* --- Pills / badges --- */
 .pill {
   display: inline-flex;

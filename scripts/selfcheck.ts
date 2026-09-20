@@ -9,9 +9,29 @@ import {
   refineEdges,
   type DetectionResult,
 } from '../src/lib/activityMonitor';
-import { DEFAULT_TRIGGERS, describeTriggers, triggerEnabled } from '../src/lib/triggers';
+import {
+  DEFAULT_TRIGGERS,
+  TRIGGERS,
+  TRIGGER_BY_ID,
+  describeTriggers,
+  triggerEnabled,
+} from '../src/lib/triggers';
+import {
+  appendEvents,
+  describeEvent,
+  discardReason,
+  eventTone,
+  summarizeLog,
+} from '../src/lib/triggerLog';
 import { parseTag, readRelease } from '../src/lib/updater';
-import type { MonitorSettings, ScheduleSettings, SleepSession } from '../src/lib/types';
+import type {
+  MonitorSettings,
+  ScheduleSettings,
+  SleepSession,
+  TriggerEvent,
+  TriggerEventKind,
+  TriggerId,
+} from '../src/lib/types';
 
 let failures = 0;
 function assert(name: string, cond: boolean, extra?: unknown) {
@@ -219,6 +239,140 @@ assert('refineEdges no descuenta latencia a la propuesta del horario',
 
 const mixed: DetectionResult[] = [byScreen, evaluateGap(at('2026-08-20T00:10:00'), at('2026-08-20T08:00:00'), mon, ['screen'])!];
 assert('noches distintas no se fusionan', mergeDetections(mixed, mon).length === 2);
+
+console.log('\n--- Módulo 3: disparadores nuevos (reposo y no molestar) ---');
+
+// Los dos nuevos existen en el catálogo, dependen del servicio nativo y sólo
+// el de reposo viene encendido: «No molestar» no lo usa todo el mundo, y
+// encenderlo por defecto a quien no lo usa sólo produciría silencio.
+assert('el catálogo incluye reposo y no molestar',
+  TRIGGER_BY_ID.idle !== undefined && TRIGGER_BY_ID.dnd !== undefined);
+assert('ambos dependen del servicio nativo',
+  TRIGGER_BY_ID.idle.native && TRIGGER_BY_ID.dnd.native);
+assert('el reposo viene activo y no molestar no',
+  DEFAULT_TRIGGERS.idle === true && DEFAULT_TRIGGERS.dnd === false);
+assert('los cuatro nativos son los que el servicio sabe escuchar',
+  TRIGGERS.filter((t) => t.native).map((t) => t.id).join(',') === 'screen,charger,idle,dnd',
+  TRIGGERS.filter((t) => t.native).map((t) => t.id));
+
+const withIdle: MonitorSettings = {
+  ...mon,
+  triggers: { ...DEFAULT_TRIGGERS, idle: true, dnd: true },
+};
+assert('el reposo se evalúa cuando está activo', triggerEnabled(withIdle, 'idle'));
+assert('y el interruptor general también lo silencia',
+  triggerEnabled({ ...withIdle, enabled: false }, 'idle') === false);
+
+// Doze acota la noche por dentro por los dos lados: el sistema tarda en dar
+// el móvil por quieto (entra después del apagado de pantalla) y sale en
+// cuanto se toca el móvil (antes de que llegue a desbloquearse). Justo por
+// eso la intersección se le acerca más al sueño real que cualquiera de las
+// dos señales por separado.
+const byIdle = evaluateGap(at('2026-08-18T23:55:00'), at('2026-08-19T07:05:00'), withIdle, ['idle'])!;
+assert('un hueco medido por Doze se detecta igual', byIdle !== null);
+const idlePlusScreen = mergeDetections([byScreen, byIdle], withIdle);
+assert('pantalla y reposo sobre la misma noche dan una sola sesión',
+  idlePlusScreen.length === 1, idlePlusScreen.length);
+assert('la intersección toma el inicio más tardío de los dos',
+  idlePlusScreen[0].session.start
+    === Math.max(byScreen.session.start, byIdle.session.start));
+assert('y el fin más temprano de los dos',
+  idlePlusScreen[0].session.end === Math.min(byScreen.session.end, byIdle.session.end));
+assert('así que la fusión nunca dura más que la señal más corta',
+  idlePlusScreen[0].session.end - idlePlusScreen[0].session.start
+    <= Math.min(byScreen.gapMs, byIdle.gapMs));
+assert('con los dos orígenes anotados',
+  describeTriggers(idlePlusScreen[0].session.triggers) === 'pantalla + reposo',
+  describeTriggers(idlePlusScreen[0].session.triggers));
+
+// «No molestar» de 23:00 a 07:00 toca la noche por los dos extremos.
+const byDnd = evaluateGap(at('2026-08-18T23:00:00'), at('2026-08-19T07:00:00'), withIdle, ['dnd'])!;
+assert('no molestar toda la noche es confianza alta',
+  byDnd.session.confidence === 'high', byDnd.session.confidence);
+
+// Una tarde entera con el móvil en reposo no es sueño: la ventana nocturna es
+// lo que impide que un disparador nuevo empiece a inventar siestas.
+assert('el reposo de una tarde no se propone',
+  evaluateGap(at('2026-08-19T13:00:00'), at('2026-08-19T17:30:00'), withIdle, ['idle']) === null);
+
+console.log('\n--- Módulo 3: registro de detección ---');
+
+const ev = (at: number, trigger: TriggerId | null, kind: TriggerEventKind, detail?: string,
+  native = true): TriggerEvent => ({ at, trigger, kind, detail, native });
+
+const t0 = at('2026-08-18T23:20:00');
+const t1 = at('2026-08-19T07:10:00');
+
+const base = appendEvents([], [
+  ev(t0, 'screen', 'open'),
+  ev(t1, 'screen', 'close'),
+]);
+assert('el registro guarda los eventos que se le dan', base.length === 2);
+assert('y los ordena del más reciente al más antiguo', base[0].at === t1, base[0].at);
+
+// El registro nativo no se vacía al leerse, así que los mismos eventos vuelven
+// en cada apertura de la app. Sin deduplicar, una noche llenaría el registro
+// entero con la misma línea repetida.
+const again = appendEvents(base, [ev(t0, 'screen', 'open'), ev(t1, 'screen', 'close')]);
+assert('releer el registro nativo no duplica nada', again.length === 2, again.length);
+
+const mixedLog = appendEvents(again, [
+  ev(t1, 'screen', 'gap', '7h 50m'),
+  ev(t1, 'screen', 'detect', '7h 30m · confianza high', false),
+]);
+assert('se mezclan eventos del servicio y de la app', mixedLog.length === 4);
+// Los tres eventos de las 07:10 comparten instante. Sin desempate, la
+// propuesta podía aparecer por encima de la señal que la produjo y el
+// registro se leía al revés de como ocurrió.
+assert('con el mismo instante, lo que midió el móvil va antes que lo que decidió la app',
+  mixedLog.findIndex((e) => e.kind === 'detect')
+    > mixedLog.findIndex((e) => e.kind === 'gap'),
+  mixedLog.map((e) => `${e.kind}:${e.native}`));
+
+// Un evento distinto en el mismo milisegundo no es un duplicado.
+assert('un detalle distinto cuenta como evento nuevo',
+  appendEvents(base, [ev(t0, 'screen', 'open', 'tras rearme')]).length === 3);
+assert('un disparador distinto también',
+  appendEvents(base, [ev(t0, 'idle', 'open')]).length === 3);
+
+// El tope evita que un servicio que rearranca en bucle llene el disco.
+const many = Array.from({ length: 50 }, (_, i) => ev(t0 + i * 1000, null, 'service', `n${i}`));
+const capped = appendEvents([], many, 20);
+assert('el registro se recorta al tope', capped.length === 20, capped.length);
+assert('y conserva los más recientes', capped[0].detail === 'n49', capped[0].detail);
+
+const summary = summarizeLog(mixedLog);
+assert('el resumen cuenta el total', summary.total === 4, summary.total);
+assert('la última señal es la del cierre, no la de la propuesta',
+  summary.lastSignalAt === t1, summary.lastSignalAt);
+assert('lista los disparadores que han dado señales',
+  summary.activeTriggers.join(',') === 'screen', summary.activeTriggers);
+assert('cuenta huecos y detecciones por separado',
+  summary.gaps === 1 && summary.detections === 1);
+assert('sin fallos anotados no inventa ninguno', summary.lastError === null);
+
+// Un registro lleno de eventos del servicio pero sin una sola señal es
+// exactamente el caso que había que poder ver: el servicio arranca, se rearma,
+// y aun así nadie está escuchando el dispositivo.
+const silent = summarizeLog(appendEvents([], [
+  ev(t0, null, 'service', 'en primer plano'),
+  ev(t0 + 60_000, null, 'error', 'sin permiso de alarmas exactas'),
+]));
+assert('un servicio que arranca sin recibir señales se nota',
+  silent.lastSignalAt === null && silent.activeTriggers.length === 0);
+assert('y el fallo queda a mano', silent.lastError?.kind === 'error');
+
+assert('cada línea se lee sola',
+  describeEvent(ev(t1, 'screen', 'close', 'tras 7h 50m')).endsWith(
+    'pantalla · vuelves al móvil — tras 7h 50m'),
+  describeEvent(ev(t1, 'screen', 'close', 'tras 7h 50m')));
+assert('los eventos sin disparador se atribuyen al servicio',
+  describeEvent(ev(t1, null, 'service', 'en primer plano')).includes('servicio · servicio'));
+assert('el descarte deja por escrito la duración y el motivo',
+  discardReason(2.5 * 3600000, 'por debajo del mínimo') === '2h 30m · por debajo del mínimo',
+  discardReason(2.5 * 3600000, 'por debajo del mínimo'));
+assert('lo que avanza y lo que se rompe se distinguen de un vistazo',
+  eventTone('detect') === 'mint' && eventTone('discard') === 'amber' && eventTone('error') === 'rose');
 
 console.log('\n--- Autoactualización ---');
 

@@ -1,9 +1,15 @@
 import { App } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
-import { HOUR, MINUTE, inWindow, parseTime } from './time';
+import { HOUR, MINUTE, formatDuration, inWindow, parseTime } from './time';
 import { loadRaw, saveRaw } from './storage';
-import { clearGaps, isBackgroundAvailable, readGaps } from './backgroundMonitor';
-import { TRIGGERS, sortTriggers, triggerEnabled } from './triggers';
+import {
+  clearGaps,
+  isBackgroundAvailable,
+  readGaps,
+  readNativeEvents,
+} from './backgroundMonitor';
+import { discardReason, logEvent, pushEvents } from './triggerLog';
+import { TRIGGERS, TRIGGER_SHORT, sortTriggers, triggerEnabled } from './triggers';
 import { goalForDate } from './schedule';
 import type {
   Confidence,
@@ -202,10 +208,31 @@ export async function collectNativeGaps(settings: MonitorSettings): Promise<Dete
     // Un hueco puede haberse registrado con un disparador que el usuario ha
     // apagado desde entonces; en ese caso se descarta sin proponerlo.
     const triggers = [gap.startTrigger, gap.endTrigger].filter(Boolean);
-    if (!triggers.every((id) => triggerEnabled(settings, id))) continue;
+    const off = triggers.find((id) => !triggerEnabled(settings, id));
+    if (off) {
+      await logEvent(
+        off,
+        'discard',
+        `el disparador «${TRIGGER_SHORT[off]}» se apagó después de registrar el hueco`,
+        gap.end,
+      );
+      continue;
+    }
 
     const result = evaluateGap(gap.start, gap.end, settings, triggers);
     if (result) results.push(result);
+    else {
+      // Sin esta línea, un hueco que el servicio sí midió pero que la
+      // evaluación rechaza —por caer fuera de la ventana nocturna, casi
+      // siempre— desaparecía sin dejar rastro, y parecía que el disparador no
+      // había llegado a dispararse.
+      await logEvent(
+        gap.endTrigger,
+        'discard',
+        discardReason(gap.end - gap.start, 'fuera de la ventana nocturna o demasiado corto'),
+        gap.end,
+      );
+    }
   }
 
   // Sólo se borra hasta el último hueco leído: si el servicio encoló uno nuevo
@@ -297,6 +324,19 @@ export async function writeScheduleMark(key: string): Promise<void> {
   await saveRaw(SCHEDULE_MARK_KEY, key);
 }
 
+/** Anota en el registro la sesión que se acaba de proponer. */
+async function logDetection(result: DetectionResult): Promise<void> {
+  const ids = result.session.triggers ?? [];
+  await logEvent(
+    ids[0] ?? null,
+    'detect',
+    `${formatDuration(result.session.end - result.session.start)} · confianza ${
+      result.session.confidence
+    }${ids.length > 1 ? ` · ${ids.map((id) => TRIGGER_SHORT[id]).join(' + ')}` : ''}`,
+    result.session.end,
+  );
+}
+
 export interface MonitorHandle {
   stop: () => void;
   /** Fuerza una comprobación inmediata (p. ej. tras cambiar los ajustes). */
@@ -341,6 +381,11 @@ export function startMonitor(
     const last = await readLastBeat();
     let detected = 0;
 
+    // El registro del servicio se importa siempre, aunque la detección esté
+    // apagada: si el usuario la desactivó sin querer, el registro es lo que se
+    // lo enseña. Se funde con el de la web para leer una única historia.
+    await pushEvents(await readNativeEvents());
+
     if (settings.enabled) {
       // Lo registrado en segundo plano tiene prioridad: es una medida directa
       // del uso del dispositivo, no una deducción a partir de la app.
@@ -348,7 +393,10 @@ export function startMonitor(
         ? await collectNativeGaps(settings)
         : [];
       for (const result of native) {
-        if (!stopped) onDetect(result);
+        if (!stopped) {
+          onDetect(result);
+          await logDetection(result);
+        }
       }
       detected += native.length;
 
@@ -358,7 +406,18 @@ export function startMonitor(
         const result = evaluateGap(last, now, settings, ['appOpen']);
         if (result) {
           onDetect(result);
+          await logDetection(result);
           detected += 1;
+        } else if (now - last >= settings.minGapMinutes * MINUTE) {
+          // Sólo interesa anotar el hueco que llegó a ser largo y aun así se
+          // rechazó. Los huecos de minutos entre dos aperturas normales
+          // llenarían el registro sin decir nada.
+          await logEvent(
+            'appOpen',
+            'discard',
+            discardReason(now - last, 'fuera de la ventana nocturna'),
+            now,
+          );
         }
       }
 

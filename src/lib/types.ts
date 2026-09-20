@@ -57,6 +57,10 @@ export type TriggerId =
   | 'charger'
   /** Hueco entre dos aperturas de PerfectRest. Funciona sin servicio nativo. */
   | 'appOpen'
+  /** Android entra en reposo profundo (Doze) y sale de él. */
+  | 'idle'
+  /** «No molestar» se activa y se desactiva, a mano o por el modo descanso. */
+  | 'dnd'
   /** Sin ninguna otra señal, se propone la meta del horario como estimación. */
   | 'schedule';
 
@@ -85,6 +89,43 @@ export interface MonitorSettings {
   background: boolean;
   /** Qué disparadores están activos. Catálogo en `lib/triggers.ts`. */
   triggers: Record<TriggerId, boolean>;
+}
+
+/**
+ * Qué le ha pasado a un disparador.
+ *
+ * El registro existe porque la detección falla en silencio: sin permisos, o
+ * con el servicio muerto, «no se detectó nada» y «no dormiste» son
+ * indistinguibles desde fuera. Cada evento deja constancia de qué señal llegó,
+ * cuándo, y qué se hizo con ella.
+ */
+export type TriggerEventKind =
+  /** El disparador marcó el principio de un hueco de inactividad. */
+  | 'open'
+  /** Lo cerró: el usuario ha vuelto al dispositivo. */
+  | 'close'
+  /** El hueco superó el umbral y se encoló como candidato. */
+  | 'gap'
+  /** El hueco se descartó, y por qué. */
+  | 'discard'
+  /** Se propuso una sesión de sueño a partir de uno o varios huecos. */
+  | 'detect'
+  /** Arranque, parada o rearme del servicio. */
+  | 'service'
+  /** Algo impidió al disparador hacer su trabajo. */
+  | 'error';
+
+/** Una línea del registro de detección. */
+export interface TriggerEvent {
+  /** Cuándo ocurrió (epoch ms). */
+  at: number;
+  /** Disparador implicado; null en los eventos del propio servicio. */
+  trigger: TriggerId | null;
+  kind: TriggerEventKind;
+  /** Detalle legible: duración, motivo del descarte, mensaje del error… */
+  detail?: string;
+  /** true si lo anotó el servicio nativo; false si la capa web. */
+  native?: boolean;
 }
 
 /** Grado de confianza de una sesión detectada automáticamente. */

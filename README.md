@@ -90,14 +90,22 @@ dispositivo pasa sin usarse**, nunca del tiempo que pasa sin abrirse la app.
 Esa señal puede venir de varios sitios, y cada uno es un **disparador** que se
 activa por separado desde Ajustes ([`src/lib/triggers.ts`](src/lib/triggers.ts)):
 
-| Disparador | Abre el hueco | Lo cierra | Dónde |
-| --- | --- | --- | --- |
-| **Bloqueo del móvil** | pantalla apagada | desbloqueo real | APK |
-| **Cargador** | lo enchufas | lo desenchufas | APK |
-| **Apertura de la app** | última marca de actividad | vuelves a abrirla | siempre |
-| **Horario objetivo** | — | — | siempre |
+| Disparador | Abre el hueco | Lo cierra | Dónde | De fábrica |
+| --- | --- | --- | --- | --- |
+| **Bloqueo del móvil** | pantalla apagada | desbloqueo real | APK | activo |
+| **Cargador** | lo enchufas | lo desenchufas | APK | apagado |
+| **Reposo profundo** | Android entra en Doze | sale de Doze | APK | activo |
+| **No molestar** | activas el filtro | lo quitas | APK | apagado |
+| **Apertura de la app** | última marca de actividad | vuelves a abrirla | siempre | activo |
+| **Horario objetivo** | — | — | siempre | apagado |
 
-Los dos primeros los mide un servicio en primer plano
+Son independientes porque **cada uno se rompe por su lado**: la pantalla no
+dice nada de quien duerme sin bloqueo seguro, el cargador no sirve a quien no
+carga de noche, Doze no llega si el móvil recibe notificaciones toda la
+madrugada y «No molestar» sólo existe si el usuario lo usa. Lo que uno pierde,
+otro lo cubre.
+
+Los cuatro primeros los mide un servicio en primer plano
 ([`SleepMonitorService.java`](android/app/src/main/java/com/perfectrest/app/SleepMonitorService.java)).
 Android sólo entrega `ACTION_SCREEN_OFF`, `ACTION_USER_PRESENT` y los eventos de
 carga a receptores registrados en código y mientras un componente siga vivo, por
@@ -110,13 +118,13 @@ detección se quedaba reducida a las aperturas de la app. Por la misma razón
 Ajustes ofrece **desactivar la optimización de batería**, que es la causa más
 común de que el servicio no llegue vivo a la mañana.
 
-El tercero es el respaldo: la app deja una marca temporal mientras está en
+El quinto es el respaldo: la app deja una marca temporal mientras está en
 primer plano y mide el hueco desde la última
 ([`src/lib/activityMonitor.ts`](src/lib/activityMonitor.ts)). Es lo único que
 funciona en el navegador, y depende de que mires el móvil poco antes de dormir y
 poco después de despertar.
 
-El cuarto no mide nada: cuando una noche no ha dejado **ninguna** otra señal,
+El sexto no mide nada: cuando una noche no ha dejado **ninguna** otra señal,
 propone la sesión que marca tu meta para que la corrijas a mano. Va siempre con
 confianza baja y viene desactivado de fábrica.
 
@@ -129,6 +137,31 @@ nivel de confianza. Toda sesión se puede confirmar, ajustar o descartar:
 - **fiable** — empieza y termina dentro de la ventana nocturna y dura entre 4 y 11 h, o dos disparadores independientes coinciden.
 - **estimada** — sólo uno de los dos extremos cae en la ventana nocturna.
 - **dudosa** — demasiado corto, demasiado largo, fuera de horas, o deducido del horario.
+
+**El registro de detección.** Los disparadores no fallan con un error: si el
+servicio no arrancó, si Android lo mató de madrugada, si el permiso de alarmas
+exactas se retiró o si esa noche simplemente no llegó ninguna señal, el
+resultado visible es siempre el mismo —ninguna sesión propuesta— y no había
+dónde mirar. Por eso todo lo que ocurre queda anotado
+([`src/lib/triggerLog.ts`](src/lib/triggerLog.ts)): cada señal recibida, cada
+hueco encolado, cada descarte **con su motivo** y cada arranque o muerte del
+servicio. Escriben en él las dos capas —el servicio nativo en un anillo de 200
+eventos en `SharedPreferences`, la app al evaluar los huecos— y Ajustes los
+funde en una sola lista ordenada, deduplicada (el registro nativo no se vacía
+al leerse, así que los mismos eventos vuelven en cada apertura).
+
+Lo que se lee de un vistazo es *«última señal del dispositivo: hace 6 h»*. Si
+en cambio pone *«ninguna»* con el servicio en marcha y todos los permisos en
+verde, el problema no es el sueño: es que nadie está escuchando.
+
+Junto al registro hay un **probador**: inyecta un hueco de 8 h por el
+disparador que elijas y lo hace recorrer la tubería real —cola nativa,
+evaluación, fusión, propuesta—. No simula el evento de Android, que no se puede
+falsificar desde la app y además escondería justo el fallo que importa; lo que
+comprueba es todo lo que viene después. Si la prueba termina en «sesión
+propuesta», lo que falla es la señal del sistema, no PerfectRest. La
+alternativa era esperar una noche entera por intento, y con cuatro
+disparadores eso no es probar nada.
 
 **El aviso al despertar.** Una propuesta que espera a que abras la app es una
 propuesta que no ves: al despertarse nadie abre PerfectRest, y la noche se
@@ -428,6 +461,7 @@ src/
     activityMonitor.ts   Módulo 3: detección por inactividad
     updater.ts           Autoactualización: API de GitHub y versiones
     triggers.ts          Módulo 3: catálogo de disparadores
+    triggerLog.ts        Módulo 3: registro de señales, huecos y descartes
     stats.ts             Módulo 3: estadísticas e interpretación
     storage.ts           persistencia (Preferences en el APK, localStorage en web)
   state/

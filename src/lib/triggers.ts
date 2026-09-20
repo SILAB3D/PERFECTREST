@@ -11,6 +11,12 @@ import type { MonitorSettings, TriggerId } from './types';
  *
  * `native` marca los que dependen del servicio en segundo plano del APK: en el
  * navegador se muestran como no disponibles y nunca se evalúan.
+ *
+ * Tener varios activos no es redundancia: cada uno se rompe por su lado. La
+ * pantalla no sirve a quien duerme sin bloqueo, el cargador no sirve a quien
+ * no carga de noche, y el reposo del sistema no llega si el móvil recibe
+ * notificaciones sin parar. Lo que uno pierde, otro lo cubre, y cuando dos
+ * coinciden sobre la misma noche la propuesta sube de confianza.
  */
 
 export interface TriggerSpec {
@@ -41,6 +47,22 @@ export const TRIGGERS: TriggerSpec[] = [
     id: 'charger',
     label: 'Poner el móvil a cargar',
     hint: 'Enchufarlo de noche marca el inicio y desenchufarlo por la mañana el final. Útil si duermes con el móvil cargando.',
+    native: true,
+    defaultOn: false,
+    directness: 2,
+  },
+  {
+    id: 'idle',
+    label: 'Reposo profundo del sistema',
+    hint: 'Android entra en modo Doze cuando el móvil lleva un rato quieto y sin usarse, y sale al cogerlo. No depende de que bloquees la pantalla.',
+    native: true,
+    defaultOn: true,
+    directness: 2,
+  },
+  {
+    id: 'dnd',
+    label: 'Modo «No molestar»',
+    hint: 'Si lo activas al acostarte —o lo hace por ti el modo descanso del móvil— marca la noche entera. Es la señal más clara de intención de dormir.',
     native: true,
     defaultOn: false,
     directness: 2,
@@ -91,6 +113,8 @@ export function sortTriggers(ids: TriggerId[]): TriggerId[] {
 export const TRIGGER_SHORT: Record<TriggerId, string> = {
   screen: 'pantalla',
   charger: 'cargador',
+  idle: 'reposo',
+  dnd: 'no molestar',
   appOpen: 'app',
   schedule: 'horario',
 };

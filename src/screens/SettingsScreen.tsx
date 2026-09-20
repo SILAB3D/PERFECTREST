@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Card, Pill, Segmented, Stepper, TimeField, Toggle } from '../components/ui';
+import { useCallback, useEffect, useState } from 'react';
+import { Card, Pill, Segmented, SelectField, Stepper, TimeField, Toggle } from '../components/ui';
 import {
   currentPermission,
   notifyNow,
@@ -9,20 +9,30 @@ import {
 } from '../lib/notifications';
 import {
   backgroundStatus,
+  clearNativeEvents,
   isBackgroundAvailable,
   openAppSettings,
   openNotificationSettings,
+  readNativeEvents,
   requestBatteryExemption,
   requestExactAlarms,
+  simulateGap,
   type MonitorStatus,
 } from '../lib/backgroundMonitor';
-import { TRIGGERS, triggerEnabled } from '../lib/triggers';
-import { HOUR, formatDuration } from '../lib/time';
+import {
+  clearLog,
+  describeEvent,
+  eventTone,
+  pushEvents,
+  summarizeLog,
+} from '../lib/triggerLog';
+import { TRIGGERS, TRIGGER_SHORT, triggerEnabled } from '../lib/triggers';
+import { HOUR, formatDuration, relativeDayLabel } from '../lib/time';
 import { useStore } from '../state/store';
 import { useAppUpdate } from '../state/update';
 import { UpdateBanner } from '../components/UpdateBanner';
 import { APP_VERSION } from '../lib/updater';
-import type { TriggerId } from '../lib/types';
+import type { TriggerEvent, TriggerId } from '../lib/types';
 
 export function SettingsScreen() {
   const { state, patch, dispatch } = useStore();
@@ -267,6 +277,8 @@ export function SettingsScreen() {
         </Card>
       )}
 
+      {monitor.enabled && <TriggerLogCard backgroundReady={backgroundReady} />}
+
       <UpdateCard />
 
       <Card title="Tus datos" sub="Todo se guarda solo en este dispositivo. No hay cuenta ni servidor.">
@@ -307,6 +319,188 @@ export function SettingsScreen() {
         médico. Si el insomnio persiste, consulta con un profesional.
       </p>
     </>
+  );
+}
+
+/**
+ * Registro de la detección.
+ *
+ * Responde a la única pregunta que el usuario se hace cuando la app no
+ * propone nada: ¿está llegando alguna señal? Hasta ahora no había forma de
+ * saberlo —los disparadores no fallan, simplemente no producen nada— y el
+ * diagnóstico se quedaba en los permisos, que pueden estar todos concedidos y
+ * aun así no llegar un solo evento.
+ *
+ * Cada línea es una señal recibida, un hueco encolado o un descarte con su
+ * motivo, del servicio nativo y de la propia app mezclados en orden. El botón
+ * de prueba inyecta un hueco real por el disparador elegido: recorre la misma
+ * tubería que uno de verdad, así que si la prueba acaba en «sesión propuesta»
+ * lo que falla es la señal del sistema, no la app.
+ */
+function TriggerLogCard({ backgroundReady }: { backgroundReady: boolean }) {
+  const [log, setLog] = useState<TriggerEvent[]>([]);
+  const [probe, setProbe] = useState<TriggerId>('screen');
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    setLog(await pushEvents(await readNativeEvents()));
+  }, []);
+
+  useEffect(() => {
+    void reload();
+    // Con la app abierta el servicio sigue anotando: el registro tiene que
+    // refrescarse solo o el usuario vería una foto fija mientras prueba.
+    const id = window.setInterval(() => void reload(), 5000);
+    return () => window.clearInterval(id);
+  }, [reload]);
+
+  const summary = summarizeLog(log);
+  const sinceSignal = summary.lastSignalAt ? Date.now() - summary.lastSignalAt : null;
+
+  const runProbe = async () => {
+    const ok = await simulateGap(probe, 480);
+    setNotice(
+      ok
+        ? 'Hueco de 8 h inyectado. Debería aparecer abajo y proponerse como sesión en unos segundos.'
+        : 'La prueba necesita la app instalada: en el navegador no hay servicio donde inyectar el hueco.',
+    );
+    await reload();
+  };
+
+  return (
+    <Card
+      title="Registro de detección"
+      sub="Qué señales han llegado y qué se ha hecho con cada una. Es donde mirar cuando no se detecta nada."
+      action={
+        <Pill tone={summary.lastSignalAt ? 'mint' : 'amber'}>
+          {summary.total ? `${summary.total} eventos` : 'vacío'}
+        </Pill>
+      }
+    >
+      <div className="row">
+        <div>
+          <div className="row__label">Última señal del dispositivo</div>
+          <div className="row__hint">
+            Si hace días que no llega ninguna, el problema no es que no duermas: es que nadie
+            está escuchando.
+          </div>
+        </div>
+        <Pill tone={sinceSignal === null ? 'amber' : 'primary'}>
+          {sinceSignal === null ? 'ninguna' : `hace ${formatDuration(sinceSignal)}`}
+        </Pill>
+      </div>
+
+      <div className="row">
+        <div>
+          <div className="row__label">Disparadores con señales</div>
+          <div className="row__hint">
+            Los que han dado alguna señal de vida, no los que están activados
+          </div>
+        </div>
+        <Pill tone={summary.activeTriggers.length ? 'mint' : 'muted'}>
+          {summary.activeTriggers.length
+            ? summary.activeTriggers.map((id) => TRIGGER_SHORT[id]).join(', ')
+            : 'ninguno'}
+        </Pill>
+      </div>
+
+      <div className="row">
+        <div>
+          <div className="row__label">Huecos y sesiones</div>
+          <div className="row__hint">Cuántos huecos se han registrado y cuántos han llegado a propuesta</div>
+        </div>
+        <Pill tone="muted">
+          {summary.gaps} / {summary.detections}
+        </Pill>
+      </div>
+
+      <div className="row">
+        <div>
+          <div className="row__label">Probar un disparador</div>
+          <div className="row__hint">
+            Inyecta un hueco de 8 h como si esa señal lo hubiera medido. Comprueba la app entera
+            sin esperar a la noche.
+          </div>
+        </div>
+        <SelectField
+          value={probe}
+          label="Disparador a probar"
+          onChange={setProbe}
+          options={TRIGGERS.filter((t) => t.native).map((t) => ({
+            value: t.id,
+            label: TRIGGER_SHORT[t.id],
+          }))}
+        />
+      </div>
+
+      <div className="pending__actions">
+        <button className="btn btn--ghost" onClick={() => void runProbe()} disabled={!backgroundReady}>
+          Lanzar prueba
+        </button>
+        <button
+          className="btn btn--ghost"
+          onClick={() =>
+            void (async () => {
+              await clearLog();
+              await clearNativeEvents();
+              setNotice(null);
+              await reload();
+            })()
+          }
+        >
+          Vaciar registro
+        </button>
+      </div>
+
+      {notice && (
+        <p style={{ fontSize: '0.76rem', color: 'var(--text-muted)', lineHeight: 1.55 }}>{notice}</p>
+      )}
+
+      {!backgroundReady && (
+        <p style={{ fontSize: '0.76rem', color: 'var(--text-muted)', lineHeight: 1.55 }}>
+          En el navegador sólo se registra el disparador de apertura de la app. Los del
+          dispositivo necesitan la app instalada.
+        </p>
+      )}
+
+      {log.length === 0 ? (
+        <p style={{ fontSize: '0.76rem', color: 'var(--text-faint)', lineHeight: 1.55 }}>
+          Todavía no hay nada. Con la detección activa deberían aparecer señales en cuanto
+          bloquees el móvil un rato.
+        </p>
+      ) : (
+        <ul
+          style={{
+            listStyle: 'none',
+            margin: 'var(--sp-3) 0 0',
+            padding: 0,
+            display: 'grid',
+            gap: 'var(--sp-2)',
+            maxHeight: '18rem',
+            overflowY: 'auto',
+          }}
+        >
+          {log.slice(0, 40).map((event, i) => (
+            <li
+              key={`${event.at}-${event.kind}-${i}`}
+              style={{
+                display: 'flex',
+                gap: 'var(--sp-2)',
+                alignItems: 'baseline',
+                fontSize: '0.74rem',
+                lineHeight: 1.5,
+                color: 'var(--text-muted)',
+              }}
+            >
+              <Pill tone={eventTone(event.kind)}>{event.native ? 'móvil' : 'app'}</Pill>
+              <span style={{ minWidth: 0, wordBreak: 'break-word' }}>
+                {relativeDayLabel(event.at)} · {describeEvent(event)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
   );
 }
 

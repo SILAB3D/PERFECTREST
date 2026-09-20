@@ -55,7 +55,16 @@ check('Inicio', wrap(<HomeScreen onGoTo={() => {}} />), [
 check('Metas', wrap(<GoalsScreen />), ['Toda la semana', 'Horas objetivo', 'Avisos']);
 check('Ciclos', wrap(<CyclesScreen />), ['ciclos', 'Duración del ciclo']);
 check('Datos (sin sesiones)', wrap(<StatsScreen />), ['Sin noches registradas', 'Añadir noche']);
-check('Ajustes', wrap(<SettingsScreen />), ['Apariencia', 'Detección automática']);
+check('Ajustes', wrap(<SettingsScreen />), [
+  'Apariencia',
+  'Detección automática',
+  // El registro es lo primero que hay que mirar cuando no se detecta nada: si
+  // desaparece de Ajustes, el diagnóstico vuelve a ser un callejón sin salida.
+  'Registro de detección',
+  'Probar un disparador',
+  'Reposo profundo del sistema',
+  'Modo «No molestar»',
+]);
 
 const demo: SleepSession = {
   id: 'demo',

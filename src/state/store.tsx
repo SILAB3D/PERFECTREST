@@ -21,8 +21,9 @@ import {
   type DetectionResult,
 } from '../lib/activityMonitor';
 import { DEFAULT_TRIGGERS } from '../lib/triggers';
+import { logEvent } from '../lib/triggerLog';
 import { ensureChannel, rescheduleAll, scheduleForegroundReminders } from '../lib/notifications';
-import { startBackground, stopBackground } from '../lib/backgroundMonitor';
+import { isBackgroundAvailable, startBackground, stopBackground } from '../lib/backgroundMonitor';
 import { parseTime } from '../lib/time';
 import type { AppState, SleepSession } from '../lib/types';
 
@@ -223,6 +224,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           // Se marca antes de proponer: si el usuario la descarta, no debe
           // reaparecer en la siguiente apertura del mismo día.
           await writeScheduleMark(proposal.key);
+          await logEvent(
+            'schedule',
+            'detect',
+            'ninguna otra señal esa noche: se propone la meta del horario',
+            proposal.result.session.end,
+          );
           propose(proposal.result);
         })();
       },
@@ -251,6 +258,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         wakeSummary,
         nightStartMinutes: parseTime(state.monitor.nightStart),
         nightEndMinutes: parseTime(state.monitor.nightEnd),
+      }).then((running) => {
+        // Que el servicio no arranque es silencioso y es la causa número uno
+        // de no detectar nada: aquí es donde deja de serlo.
+        if (!running && isBackgroundAvailable()) {
+          void logEvent(null, 'error', 'Android no dejó arrancar el servicio de detección');
+        }
       });
     } else {
       void stopBackground();
