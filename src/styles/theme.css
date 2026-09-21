@@ -2,6 +2,20 @@
    Paleta nocturna serena, contrastes verificados AA sobre fondo. */
 
 :root {
+  /**
+   * Zonas seguras del dispositivo: notch, isla, esquinas redondeadas y barra
+   * de gestos. Se pasan por variable en vez de usar `env()` directamente allí
+   * donde hacen falta, y no por gusto: `env()` lo resuelve el sistema y no hay
+   * forma de darle otro valor, así que una maquetación que sólo se rompe con
+   * un notch delante no se puede comprobar en ningún sitio más que en un móvil
+   * con notch. Con la variable en medio, `layoutcheck` simula el recorte y
+   * audita las pantallas como si lo tuvieran.
+   */
+  --safe-top: env(safe-area-inset-top);
+  --safe-right: env(safe-area-inset-right);
+  --safe-bottom: env(safe-area-inset-bottom);
+  --safe-left: env(safe-area-inset-left);
+
   /* --- Tema oscuro (por defecto: es una app de sueño) --- */
   --bg:            #090D1A;
   --bg-elevated:   #101733;

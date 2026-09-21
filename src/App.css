@@ -9,7 +9,34 @@
   max-width: 520px;
   margin: 0 auto;
   /* Zonas seguras del móvil (notch y barra de gestos). */
-  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+  padding: var(--safe-top) var(--safe-right) 0 var(--safe-left);
+}
+
+/**
+ * Franja bajo la barra de estado.
+ *
+ * Desde Android 15 la app se dibuja de borde a borde por obligación: la barra
+ * de estado —reloj, batería, cobertura— queda encima de la web. El relleno de
+ * `.app` basta para que el contenido *empiece* por debajo, pero no para lo que
+ * pasa al desplazar: el texto sube por detrás del reloj y se leen los dos a la
+ * vez. Esta franja lo tapa, igual que la barra de pestañas tapa la zona del
+ * gesto de abajo, y con el mismo tratamiento para que se lean como un par.
+ *
+ * Alto `var(--safe-top)`: en el navegador vale cero y la franja
+ * desaparece sola, sin necesidad de condicionarla.
+ */
+.app::before,
+.onboard::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--safe-top);
+  z-index: 20;
+  background: color-mix(in srgb, var(--bg-elevated) 88%, transparent);
+  backdrop-filter: blur(18px);
+  pointer-events: none;
 }
 
 .appbar {
@@ -46,7 +73,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
-  padding: var(--sp-2) var(--sp-5) calc(var(--tabbar-space) + env(safe-area-inset-bottom));
+  padding: var(--sp-2) var(--sp-5) calc(var(--tabbar-space) + var(--safe-bottom));
   animation: rise 0.32s var(--ease);
 }
 
@@ -65,7 +92,7 @@
   display: flex;
   max-width: 520px;
   margin: 0 auto;
-  padding: var(--sp-2) var(--sp-3) calc(var(--sp-2) + env(safe-area-inset-bottom));
+  padding: var(--sp-2) var(--sp-3) calc(var(--sp-2) + var(--safe-bottom));
   background: color-mix(in srgb, var(--bg-elevated) 88%, transparent);
   backdrop-filter: blur(18px);
   border-top: 1px solid var(--border-soft);
@@ -280,9 +307,17 @@
   z-index: 60;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  /* `safe`: centrado mientras quepa, y alineado arriba cuando no. Sin él, en
+     una pantalla estrecha el contenido desborda por los dos lados a la vez y
+     el relleno de arriba —el que aparta el logo del notch— queda fuera de
+     alcance, porque no se puede desplazar hacia atrás. */
+  justify-content: safe center;
   gap: var(--sp-5);
-  padding: var(--sp-8) var(--sp-6) calc(var(--sp-8) + env(safe-area-inset-bottom));
+  /* Cubre la pantalla entera, así que las zonas seguras son cosa suya: está
+     fuera de `.app` y no hereda su relleno. Sin el recorte de arriba, el logo
+     quedaba bajo el reloj en cuanto el móvil tenía notch. */
+  padding: calc(var(--sp-8) + var(--safe-top)) calc(var(--sp-6) + var(--safe-right))
+    calc(var(--sp-8) + var(--safe-bottom)) calc(var(--sp-6) + var(--safe-left));
   background: var(--bg);
   max-width: 520px;
   margin: 0 auto;
@@ -320,7 +355,7 @@
   background: var(--bg-elevated);
   border-radius: var(--r-lg) var(--r-lg) 0 0;
   border-top: 1px solid var(--border);
-  padding: var(--sp-5) var(--sp-5) calc(var(--sp-6) + env(safe-area-inset-bottom));
+  padding: var(--sp-5) var(--sp-5) calc(var(--sp-6) + var(--safe-bottom));
   box-shadow: var(--shadow-lg);
   animation: slideUp 0.26s var(--ease);
   max-height: 88vh;

@@ -23,6 +23,21 @@ if (!executablePath) {
   process.exit(1);
 }
 
+/**
+ * Recortes de pantalla que se simulan.
+ *
+ * Un navegador no tiene notch, así que `env(safe-area-inset-*)` siempre vale
+ * cero y una maquetación que sólo se rompe con un recorte delante pasaba la
+ * auditoría en verde. El CSS lee esos valores a través de `--safe-*`
+ * (ver theme.css), y aquí se les da otro valor para auditar la app como si
+ * estuviera en un móvil con notch y barra de gestos.
+ */
+const INSETS = [
+  { name: 'sin recorte', top: 0, right: 0, bottom: 0, left: 0 },
+  // Valores de un Galaxy S24+ / iPhone moderno en vertical.
+  { name: 'con notch', top: 54, right: 0, bottom: 34, left: 0 },
+];
+
 /** Anchos representativos: móvil pequeño, medio, grande y tablet estrecha. */
 const WIDTHS = [320, 360, 390, 430, 520];
 const TABS = [
@@ -206,7 +221,40 @@ function auditPage(scale) {
     }
   }
 
-  // 6. Objetivos táctiles demasiado pequeños.
+  // 6. Zona segura superior: el recorte del móvil y la barra de estado.
+  //
+  // Desde Android 15 la app se dibuja bajo la barra de estado por obligación.
+  // Dos cosas tienen que cumplirse: que haya una franja que la tape —si no, el
+  // texto que se desplaza se lee encima del reloj— y que arriba del todo nada
+  // del contenido caiga dentro del recorte.
+  const safeTop = parseFloat(
+    getComputedStyle(document.documentElement).getPropertyValue('--safe-top'),
+  ) || 0;
+  if (safeTop > 0) {
+    const layer = document.querySelector('.onboard') ?? document.querySelector('.app');
+    const band = layer ? parseFloat(getComputedStyle(layer, '::before').height) || 0 : 0;
+    if (band + 0.5 < safeTop) {
+      problems.push({
+        kind: 'zona-segura-superior',
+        detail: `la franja de la barra de estado mide ${Math.round(band)}px y el recorte ${Math.round(safeTop)}px`,
+      });
+    }
+    if (window.scrollY < 4) {
+      for (const el of all) {
+        if (el.children.length > 0) continue;
+        if (el.closest('.tabbar')) continue;
+        const r = el.getBoundingClientRect();
+        if (r.height > 0 && r.bottom > 0 && r.top < safeTop - 0.5) {
+          problems.push({
+            kind: 'zona-segura-superior',
+            detail: `${describe(el)} empieza en ${Math.round(r.top)}px, dentro del recorte de ${Math.round(safeTop)}px`,
+          });
+        }
+      }
+    }
+  }
+
+  // 7. Objetivos táctiles demasiado pequeños.
   for (const el of all) {
     if (!['BUTTON', 'A', 'INPUT'].includes(el.tagName)) continue;
     const r = el.getBoundingClientRect();
@@ -218,7 +266,20 @@ function auditPage(scale) {
     }
   }
 
-  // 7. Espaciados fuera de la escala del tema.
+  // 8. Espaciados fuera de la escala del tema.
+  //
+  // El relleno que absorbe una zona segura lleva sumado un valor que decide el
+  // móvil, no el tema, así que se descuenta antes de juzgarlo: lo que tiene
+  // que estar en la escala es lo que puso el diseño.
+  const rootCS = getComputedStyle(document.documentElement);
+  const inset = (name) => parseFloat(rootCS.getPropertyValue(name)) || 0;
+  const SAFE_BY_PROP = {
+    paddingTop: inset('--safe-top'),
+    paddingRight: inset('--safe-right'),
+    paddingBottom: inset('--safe-bottom'),
+    paddingLeft: inset('--safe-left'),
+  };
+
   for (const el of all) {
     const cs = getComputedStyle(el);
     for (const prop of ['paddingTop', 'paddingBottom', 'paddingLeft', 'paddingRight', 'gap', 'rowGap', 'columnGap', 'marginTop', 'marginBottom']) {
@@ -227,7 +288,9 @@ function auditPage(scale) {
       const v = Math.round(parseFloat(raw) * 100) / 100;
       if (!Number.isFinite(v) || v === 0) continue;
       spacingUsage[v] = (spacingUsage[v] || 0) + 1;
-      if (!scale.includes(v)) {
+      const safe = SAFE_BY_PROP[prop] ?? 0;
+      const net = Math.round((v - safe) * 100) / 100;
+      if (!scale.includes(v) && !(safe > 0 && scale.includes(net))) {
         problems.push({
           kind: 'espaciado-fuera-de-escala',
           detail: `${describe(el)} ${prop}: ${v}px`,
@@ -290,6 +353,7 @@ const VARIANTS = [
 ];
 
 for (const variant of VARIANTS) {
+for (const inset of INSETS) {
 for (const width of WIDTHS) {
   const page = await browser.newPage();
   await page.setViewport({ width, height: 800, deviceScaleFactor: 2, isMobile: true });
@@ -297,6 +361,12 @@ for (const width of WIDTHS) {
     localStorage.setItem('perfectrest.state.v1', JSON.stringify(state));
   }, variant.state);
   await page.goto(URL, { waitUntil: 'networkidle0' });
+  // Después de cargar, para ganar a la hoja del tema por orden de aparición.
+  if (inset.top || inset.bottom || inset.left || inset.right) {
+    await page.addStyleTag({
+      content: `:root{--safe-top:${inset.top}px;--safe-right:${inset.right}px;--safe-bottom:${inset.bottom}px;--safe-left:${inset.left}px}`,
+    });
+  }
   await new Promise((r) => setTimeout(r, 350));
 
   // El onboarding ocupa toda la pantalla: se audita tal cual, sin pestañas.
@@ -308,7 +378,7 @@ for (const width of WIDTHS) {
       byKind[p.kind] ??= new Map();
       const prev = byKind[p.kind].get(key);
       if (prev) prev.widths.add(width);
-      else byKind[p.kind].set(key, { detail: p.detail, widths: new Set([width]), tab: variant.name });
+      else byKind[p.kind].set(key, { detail: p.detail, widths: new Set([width]), tab: `${variant.name}·${inset.name}` });
       total++;
     }
     await page.close();
@@ -342,7 +412,7 @@ for (const width of WIDTHS) {
         byKind[p.kind] ??= new Map();
         const prev = byKind[p.kind].get(key);
         if (prev) prev.widths.add(width);
-        else byKind[p.kind].set(key, { detail: p.detail, widths: new Set([width]), tab: `${variant.name}/${label}` });
+        else byKind[p.kind].set(key, { detail: p.detail, widths: new Set([width]), tab: `${variant.name}·${inset.name}/${label}` });
         total++;
       }
     }
@@ -365,7 +435,7 @@ for (const width of WIDTHS) {
           byKind[pr.kind] ??= new Map();
           const prev = byKind[pr.kind].get(key);
           if (prev) prev.widths.add(width);
-          else byKind[pr.kind].set(key, { detail: pr.detail, widths: new Set([width]), tab: `${variant.name}/hoja` });
+          else byKind[pr.kind].set(key, { detail: pr.detail, widths: new Set([width]), tab: `${variant.name}·${inset.name}/hoja` });
           total++;
         }
         await page.keyboard.press('Escape');
@@ -375,11 +445,12 @@ for (const width of WIDTHS) {
   await page.close();
 }
 }
+}
 
 await browser.close();
 
 console.log('\n=== Auditoría de maquetación ===');
-console.log(`Anchos probados: ${WIDTHS.join(', ')}px · pantallas: ${TABS.length}\n`);
+console.log(`Anchos probados: ${WIDTHS.join(', ')}px · pantallas: ${TABS.length} · recortes: ${INSETS.map((i) => i.name).join(', ')}\n`);
 
 const ORDER = [
   'scroll-horizontal',
@@ -387,6 +458,7 @@ const ORDER = [
   'desborda-contenedor',
   'solapamiento',
   'tapado-por-tabbar',
+  'zona-segura-superior',
   'zona-tactil-pequena',
   'espaciado-fuera-de-escala',
 ];

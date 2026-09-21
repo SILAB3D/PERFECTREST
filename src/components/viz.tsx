@@ -70,32 +70,50 @@ export function CycleRing({
     }
   }
 
+  // La costura del anillo: donde se junta acostarse con despertar. En un
+  // anillo de 360° los dos extremos son el mismo punto, así que se marca una
+  // vez. Antes había dos círculos, uno por extremo, y además de caer
+  // exactamente uno encima del otro se dibujaban en la esquina del SVG:
+  // `polar` devuelve {x, y} y `<circle>` necesita {cx, cy}, de modo que el
+  // spread ponía atributos que el círculo ignora y cx/cy caían a cero.
+  const seam = polar(cx, cy, r, 0);
+
   return (
     <div className="arc-wrap">
-      <svg className="arc" viewBox={`0 0 ${size} ${size}`} role="img"
-        aria-label={`${cycles} ciclos de sueño, de ${formatClock(bedtime)} a ${formatClock(wakeTime)}`}>
-        <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--surface-2)" strokeWidth={stroke} />
-        {segments.map((s, i) => (
-          <path
-            key={i}
-            d={arcPath(cx, cy, r, s.from, s.to)}
-            fill="none"
-            stroke={s.color}
-            strokeWidth={stroke}
-            strokeLinecap="butt"
-            opacity={s.op}
+      {/* Fuera del SVG a propósito: dentro caía sobre el trazo del anillo, que
+          empieza a 14px del borde del viewBox, y agrandar el viewBox habría
+          descentrado la cifra del medio, que se posiciona sobre la caja. */}
+      <div className="arc__range">
+        {formatClock(bedtime)} → {formatClock(wakeTime)}
+      </div>
+      <div className="arc__ring">
+        <svg className="arc" viewBox={`0 0 ${size} ${size}`} role="img"
+          aria-label={`${cycles} ciclos de sueño, de ${formatClock(bedtime)} a ${formatClock(wakeTime)}`}>
+          <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--surface-2)" strokeWidth={stroke} />
+          {segments.map((s, i) => (
+            <path
+              key={i}
+              d={arcPath(cx, cy, r, s.from, s.to)}
+              fill="none"
+              stroke={s.color}
+              strokeWidth={stroke}
+              strokeLinecap="butt"
+              opacity={s.op}
+            />
+          ))}
+          <circle
+            cx={seam.x}
+            cy={seam.y}
+            r={5}
+            fill="var(--bg)"
+            stroke="var(--amber)"
+            strokeWidth={2.5}
           />
-        ))}
-        {/* Marcadores de inicio y fin */}
-        <circle {...polar(cx, cy, r, 0)} r={5} fill="var(--bg)" stroke="var(--primary)" strokeWidth={2.5} />
-        <circle {...polar(cx, cy, r, 359.9)} r={5} fill="var(--bg)" stroke="var(--amber)" strokeWidth={2.5} />
-        <text x={cx} y={18} textAnchor="middle" className="arc__label">
-          {formatClock(bedtime)} → {formatClock(wakeTime)}
-        </text>
-      </svg>
-      <div className="arc__center">
-        <div className="arc__big">{formatDuration(sleepMs)}</div>
-        <div className="arc__small">{cycles} ciclos completos</div>
+        </svg>
+        <div className="arc__center">
+          <div className="arc__big">{formatDuration(sleepMs)}</div>
+          <div className="arc__small">{cycles} ciclos completos</div>
+        </div>
       </div>
     </div>
   );
