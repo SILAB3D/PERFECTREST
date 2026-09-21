@@ -49,6 +49,8 @@ type Action =
   | 'SCREEN_OFF'
   | 'SCREEN_ON'
   | 'USER_PRESENT'
+  /** El usuario quita el cerrojo. Es estado del sistema, no una difusión. */
+  | 'UNLOCK'
   | 'POWER_CONNECTED'
   | 'POWER_DISCONNECTED'
   | 'IDLE_ON'
@@ -66,6 +68,8 @@ interface Event {
 interface Device {
   /** ¿Exige PIN, patrón o huella? Cambia qué señal cierra el hueco. */
   keyguardSecure: boolean;
+  /** ¿Está el cerrojo puesto ahora mismo? Es lo que el servicio consulta. */
+  keyguardLocked: boolean;
   /** Estado de la pantalla, que el modelo va siguiendo. */
   interactive: boolean;
   idle: boolean;
@@ -83,6 +87,8 @@ class ServiceModel {
   /** Avisos «has dormido X» que el servicio habría emitido. */
   readonly summaries: Array<{ at: number; start: number; end: number }> = [];
   private lastSummaryAt = 0;
+  /** SPEC: SleepMonitorService.watchForUnlock / stopWatchingForUnlock */
+  private watchingForUnlock = false;
   lastUsedAt = 0;
 
   constructor(
@@ -139,6 +145,23 @@ class ServiceModel {
     if (marksUse) this.lastUsedAt = now;
   }
 
+  /** SPEC: SleepMonitorService.userIsBack */
+  private userIsBack(now: number): void {
+    this.watchingForUnlock = false;
+    this.close('screen', now, true);
+    // Doze puede haber salido ya con la pantalla apagada, o no haber salido
+    // todavía: en ambos casos el usuario está de vuelta.
+    this.close('idle', now, true);
+  }
+
+  /** SPEC: SleepMonitorService.healStuckGap */
+  private healStuckGap(now: number): void {
+    const dev = this.device;
+    if (!dev.interactive || dev.keyguardLocked) return;
+    if ((this.openAt.get('screen') ?? 0) <= 0 && (this.openAt.get('idle') ?? 0) <= 0) return;
+    this.userIsBack(now);
+  }
+
   /** SPEC: SleepMonitorService.maybeNotifySummary */
   private maybeSummary(start: number, end: number): void {
     if (!this.inNight(start) && !this.inNight(end)) return;
@@ -162,24 +185,34 @@ class ServiceModel {
     switch (action) {
       case 'SCREEN_OFF':
         dev.interactive = false;
+        // Al apagarse la pantalla el móvil vuelve a echar el cerrojo.
+        dev.keyguardLocked = dev.keyguardSecure;
+        this.watchingForUnlock = false;
         this.open('screen', at, true);
         break;
 
       case 'SCREEN_ON':
         dev.interactive = true;
-        // Sin bloqueo seguro no hay USER_PRESENT: encender es volver.
-        if (!dev.keyguardSecure) {
-          this.close('screen', at, true);
-          this.close('idle', at, true);
-        }
+        // Con el cerrojo quitado el usuario ya está delante. Con el cerrojo
+        // puesto todavía no se sabe, así que se vigila en vez de dar por hecho
+        // que llegará USER_PRESENT.
+        if (!dev.keyguardLocked) this.userIsBack(at);
+        else this.watchingForUnlock = true;
+        break;
+
+      case 'UNLOCK':
+        // El usuario quita el cerrojo. Esto no es una difusión: es estado del
+        // sistema que el servicio consulta, y por eso funciona en los móviles
+        // donde USER_PRESENT no llega.
+        dev.keyguardLocked = false;
+        if (this.watchingForUnlock && dev.interactive) this.userIsBack(at);
         break;
 
       case 'USER_PRESENT':
+        // Cuando sí llega, es la señal más directa y se atiende igual.
         dev.interactive = true;
-        this.close('screen', at, true);
-        // Doze puede haber salido ya con la pantalla apagada, o no haber
-        // salido todavía: en ambos casos el usuario está de vuelta.
-        this.close('idle', at, true);
+        dev.keyguardLocked = false;
+        this.userIsBack(at);
         break;
 
       case 'POWER_CONNECTED':
@@ -213,8 +246,10 @@ class ServiceModel {
         break;
 
       case 'SERVICE_START':
-        // SPEC: SleepMonitorService.primeScreenState
+        // SPEC: SleepMonitorService.primeScreenState + healStuckGap
+        this.healStuckGap(at);
         if (!dev.interactive) this.open('screen', at, false);
+        else if (dev.keyguardLocked) this.watchingForUnlock = true;
         if (dev.idle) this.open('idle', at, false);
         if (dev.dnd) this.open('dnd', at, false);
         break;
@@ -362,6 +397,33 @@ const NIGHTS: Night[] = [
     ],
   },
   {
+    // El fallo que dejaba el disparador de pantalla muerto para siempre.
+    //
+    // En un Galaxy S24+ con One UI, comprobado con el histórico de difusiones
+    // del propio sistema, ACTION_USER_PRESENT no se entrega nunca a la app:
+    // SCREEN_ON y SCREEN_OFF llegan los dos, USER_PRESENT ninguno de nueve
+    // veces. Como con bloqueo seguro era lo único que cerraba el hueco, el
+    // primer SCREEN_OFF lo abría y ya no lo cerraba nadie. Aquí no hay un solo
+    // USER_PRESENT: la noche tiene que salir igual.
+    name: 'móvil que nunca entrega USER_PRESENT',
+    triggers: ['screen'],
+    device: { keyguardSecure: true, interactive: false },
+    truth: { start: '2026-09-18T23:40:00', end: '2026-09-19T07:15:00' },
+    summaries: 1,
+    events: [
+      ev('2026-09-18T23:40:00', 'SCREEN_OFF'),
+      // Notificaciones de madrugada: encienden la pantalla sin desbloquear, y
+      // no deben cerrar nada porque el cerrojo sigue puesto.
+      ev('2026-09-19T02:10:00', 'SCREEN_ON'),
+      ev('2026-09-19T02:10:20', 'SCREEN_OFF'),
+      ev('2026-09-19T04:55:00', 'SCREEN_ON'),
+      ev('2026-09-19T04:55:15', 'SCREEN_OFF'),
+      // Por la mañana sí se desbloquea, y eso es lo que cierra la noche.
+      ev('2026-09-19T07:15:00', 'SCREEN_ON'),
+      ev('2026-09-19T07:15:08', 'UNLOCK'),
+    ],
+  },
+  {
     // Levantarse al baño a las cuatro no parte la noche en dos sesiones.
     name: 'despertar breve de madrugada',
     triggers: ['screen'],
@@ -395,8 +457,13 @@ function runNight(night: Night): {
     interactive: false,
     idle: false,
     dnd: false,
+    keyguardLocked: false,
     ...night.device,
   };
+  // Con la pantalla apagada, el cerrojo está puesto si el móvil lo exige.
+  if (night.device.keyguardLocked === undefined) {
+    device.keyguardLocked = device.keyguardSecure && !device.interactive;
+  }
   const settings: MonitorSettings = {
     ...MON,
     ...night.settings,
@@ -460,6 +527,85 @@ for (const night of NIGHTS) {
 }
 
 console.log('\n--- Regresiones concretas ---');
+
+/**
+ * El atasco del disparador de pantalla, aislado.
+ *
+ * Es el fallo que se veía en Ajustes como «Último uso del móvil — hace 21h»
+ * con el móvil desbloqueado en la mano. Sin USER_PRESENT, el hueco abierto por
+ * el primer SCREEN_OFF no lo cerraba nadie; los SCREEN_OFF siguientes se iban
+ * por el retorno temprano de `openGap`, que no anota ni refresca `lastUsedAt`;
+ * y los SCREEN_ON se descartaban por haber bloqueo seguro. El disparador
+ * quedaba muerto para el resto de la vida de la instalación.
+ */
+function runEvents(events: Event[], device: Partial<Device> = {}): ServiceModel {
+  const dev: Device = {
+    keyguardSecure: true,
+    keyguardLocked: true,
+    interactive: false,
+    idle: false,
+    dnd: false,
+    ...device,
+  };
+  const model = new ServiceModel(['screen'], 180 * 60_000, dev);
+  for (const e of events) model.handle(e);
+  return model;
+}
+
+const diaNormal = runEvents([
+  ev('2026-09-19T10:00:00', 'SCREEN_OFF'),
+  ev('2026-09-19T10:30:00', 'SCREEN_ON'),
+  ev('2026-09-19T10:30:05', 'UNLOCK'),
+  ev('2026-09-19T12:00:00', 'SCREEN_OFF'),
+  ev('2026-09-19T14:00:00', 'SCREEN_ON'),
+  ev('2026-09-19T14:00:04', 'UNLOCK'),
+]);
+assert(
+  'sin USER_PRESENT, «último uso» sigue el desbloqueo real',
+  diaNormal.lastUsedAt === t('2026-09-19T14:00:04'),
+  new Date(diaNormal.lastUsedAt).toTimeString().slice(0, 8),
+);
+
+// Una notificación que enciende la pantalla sin desbloquear no es una vuelta.
+const soloNotificacion = runEvents([
+  ev('2026-09-18T23:00:00', 'SCREEN_OFF'),
+  ev('2026-09-19T01:00:00', 'SCREEN_ON'),
+  ev('2026-09-19T01:00:10', 'SCREEN_OFF'),
+]);
+assert(
+  'una notificación de madrugada no cierra la noche',
+  soloNotificacion.gaps.length === 0 && soloNotificacion.lastUsedAt === t('2026-09-18T23:00:00'),
+  soloNotificacion.gaps,
+);
+
+// El vigilante encuentra el móvil desbloqueado con un hueco abierto: imposible.
+const curado = runEvents(
+  [
+    ev('2026-09-18T23:20:00', 'SCREEN_OFF'),
+    // Ni USER_PRESENT ni UNLOCK: la señal de vuelta se perdió del todo y el
+    // hueco se quedaría abierto para siempre. El rearme de las 07:30 lo ve.
+    ev('2026-09-19T07:30:00', 'SERVICE_START'),
+  ],
+  {},
+);
+// El rearme ocurre con el móvil ya en uso: así es como lo encuentra el vigilante.
+const curadoConUso = runEvents([
+  ev('2026-09-18T23:20:00', 'SCREEN_OFF'),
+  ev('2026-09-19T07:30:00', 'SCREEN_ON'),
+  ev('2026-09-19T07:30:06', 'UNLOCK'),
+]);
+assert('el hueco sin señal de vuelta no se pierde', curadoConUso.gaps.length === 1, curadoConUso.gaps);
+assert(
+  'y mide la noche entera',
+  curadoConUso.gaps.length === 1 &&
+    curadoConUso.gaps[0].end - curadoConUso.gaps[0].start === t('2026-09-19T07:30:06') - t('2026-09-18T23:20:00'),
+  curadoConUso.gaps[0] && formatDuration(curadoConUso.gaps[0].end - curadoConUso.gaps[0].start),
+);
+assert(
+  'con la pantalla apagada, el rearme no cierra nada',
+  curado.gaps.length === 0,
+  curado.gaps,
+);
 
 // El fallo original, aislado: un fragmento de Doze no debe recortar la noche
 // que la pantalla midió entera. Con la fusión por intersección, el resultado

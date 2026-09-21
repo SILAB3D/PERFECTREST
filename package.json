@@ -18,7 +18,8 @@
     "shots": "node scripts/screenshots.mjs",
     "icons": "node scripts/icons.mjs",
     "release": "node scripts/release-apk.mjs",
-    "keystore": "node scripts/keystore.mjs"
+    "keystore": "node scripts/keystore.mjs",
+    "triggers": "node scripts/triggercheck.mjs"
   },
   "dependencies": {
     "@capacitor/app": "^8.1.1",

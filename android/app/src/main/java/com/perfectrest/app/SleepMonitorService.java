@@ -15,7 +15,9 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
 
 import androidx.core.app.NotificationCompat;
@@ -37,10 +39,17 @@ import java.util.Locale;
  * en primer plano: es la única forma de seguir escuchando esos eventos
  * mientras el usuario duerme y la app está cerrada.
  *
+ * De esas difusiones no se puede fiar uno por igual. SCREEN_ON y SCREEN_OFF
+ * llegan siempre; USER_PRESENT hay dispositivos donde no llega nunca, y el
+ * disparador de pantalla dependía sólo de él para cerrar el hueco. Por eso el
+ * regreso del usuario se decide consultando el cerrojo —estado del sistema,
+ * que siempre se puede preguntar— y no esperando una señal que puede no venir.
+ * Ver {@link #watchForUnlock()}.
+ *
  * Se registran cuatro disparadores independientes, cada uno activable desde
  * los ajustes de la app:
  *
- *   screen   SCREEN_OFF            -> USER_PRESENT            (lo suelta / vuelve)
+ *   screen   SCREEN_OFF            -> se quita el cerrojo      (lo suelta / vuelve)
  *   charger  POWER_CONNECTED       -> POWER_DISCONNECTED      (lo enchufa / lo suelta)
  *   idle     entra en Doze         -> sale de Doze            (el sistema lo da por quieto)
  *   dnd      «No molestar» activo  -> «No molestar» apagado   (se va a dormir)
@@ -209,6 +218,9 @@ public class SleepMonitorService extends Service {
         // Los ajustes pueden haber cambiado entre dos arranques (el usuario
         // activa o desactiva un disparador), así que se vuelve a registrar.
         registerDeviceReceiver();
+        // Cada rearme es también una oportunidad de darse cuenta de que la
+        // señal de vuelta se perdió y el hueco lleva horas sin poder cerrarse.
+        healStuckGap(System.currentTimeMillis());
         scheduleWatchdog(this);
         // START_STICKY: si el sistema mata el servicio por memoria, lo recrea.
         return START_STICKY;
@@ -230,6 +242,7 @@ public class SleepMonitorService extends Service {
     @Override
     public void onDestroy() {
         unregisterDeviceReceiver();
+        stopWatchingForUnlock();
         // Si el servicio muere sin que el usuario lo haya apagado, la alarma
         // pendiente lo devolverá a la vida en el próximo ciclo. Que se anote
         // es la única forma de ver después cuántas veces lo mató el sistema
@@ -453,7 +466,13 @@ public class SleepMonitorService extends Service {
         };
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            // Exportado a propósito. Todas las acciones del filtro son
+            // difusiones protegidas: sólo el sistema puede emitirlas, así que
+            // no abre ninguna puerta a otras apps. Marcarlas como no exportadas
+            // es lo que en algunos dispositivos deja fuera a USER_PRESENT, que
+            // —a diferencia de SCREEN_ON y SCREEN_OFF— no se envía sólo a
+            // receptores registrados en código.
+            registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(receiver, filter);
         }
@@ -470,30 +489,24 @@ public class SleepMonitorService extends Service {
         switch (action) {
             case Intent.ACTION_SCREEN_OFF:
                 // Momento en que el uso termina: candidato a inicio del hueco.
+                stopWatchingForUnlock();
                 openGap(TRIGGER_SCREEN, now, true);
                 break;
 
             case Intent.ACTION_USER_PRESENT:
                 // Desbloqueo real: la señal más fiable de que el usuario ha
-                // vuelto al dispositivo.
-                closeGap(TRIGGER_SCREEN, now, true);
-                // Y con él se cierra también el hueco de Doze. Hace falta
-                // decirlo aquí porque ACTION_DEVICE_IDLE_MODE_CHANGED ya no
-                // cierra nada con la pantalla apagada, y puede llegar antes
-                // que el desbloqueo o no llegar en absoluto.
-                closeGap(TRIGGER_IDLE, now, true);
+                // vuelto al dispositivo. Ya no es la única, porque hay móviles
+                // donde no llega nunca: ver `watchForUnlock`.
+                userIsBack(now);
                 break;
 
             case Intent.ACTION_SCREEN_ON:
-                // Sin bloqueo seguro (PIN, patrón o huella) Android nunca emite
-                // USER_PRESENT: encender la pantalla es entonces la única señal
-                // de vuelta disponible. Con bloqueo seguro se ignora, porque la
-                // pantalla puede encenderse sola por una notificación sin que
-                // el usuario coja el móvil.
-                if (!keyguardSecure()) {
-                    closeGap(TRIGGER_SCREEN, now, true);
-                    closeGap(TRIGGER_IDLE, now, true);
-                }
+                // Sin bloqueo el usuario ya está delante: encender es volver.
+                // Con bloqueo todavía no se sabe —la pantalla puede haberse
+                // encendido sola por una notificación— así que se vigila el
+                // cerrojo unos minutos en vez de esperar a USER_PRESENT.
+                if (!keyguardLocked()) userIsBack(now);
+                else watchForUnlock();
                 break;
 
             case Intent.ACTION_POWER_CONNECTED:
@@ -620,6 +633,82 @@ public class SleepMonitorService extends Service {
         edit.apply();
     }
 
+    /**
+     * El usuario ha vuelto al móvil: se cierran los huecos que eso termina.
+     *
+     * Va junto porque las dos señales describen el mismo hecho desde ángulos
+     * distintos, y Doze puede haber salido ya con la pantalla apagada o no
+     * haber salido todavía. En ambos casos el usuario está delante.
+     */
+    private void userIsBack(long now) {
+        stopWatchingForUnlock();
+        closeGap(TRIGGER_SCREEN, now, true);
+        closeGap(TRIGGER_IDLE, now, true);
+    }
+
+    /**
+     * Vigila si el usuario quita el cerrojo, en vez de esperar a USER_PRESENT.
+     *
+     * Este es el arreglo del fallo que dejaba el disparador de pantalla muerto
+     * para siempre. Hay dispositivos —un Galaxy S24+ con One UI, comprobado con
+     * el histórico de difusiones del propio sistema— donde
+     * {@link Intent#ACTION_USER_PRESENT} no se entrega nunca a la app, mientras
+     * que SCREEN_ON y SCREEN_OFF llegan siempre. Como con bloqueo seguro
+     * USER_PRESENT era lo único que cerraba el hueco, el primer bloqueo de
+     * pantalla lo abría y ya no lo cerraba nadie: `openAt.screen` se quedaba
+     * clavado, los SCREEN_OFF siguientes se iban por el retorno temprano de
+     * {@link #openGap} y «Último uso del móvil» se congelaba durante días.
+     *
+     * Preguntar por el cerrojo no depende de que llegue ninguna difusión: es
+     * estado del sistema, se consulta y ya está. Se mira varias veces y
+     * espaciando, porque entre que la pantalla se enciende y el usuario mete el
+     * PIN o pone el dedo pasan segundos, y porque una pantalla encendida por
+     * una notificación no debe contar como vuelta: si el cerrojo sigue puesto
+     * cuando se agota la vigilancia, no ha vuelto nadie.
+     */
+    private static final long[] UNLOCK_WATCH_DELAYS_MS = {
+        1_000L, 3_000L, 6_000L, 12_000L, 25_000L, 50_000L, 100_000L, 180_000L
+    };
+
+    private final Handler unlockWatch = new Handler(Looper.getMainLooper());
+
+    private void watchForUnlock() {
+        stopWatchingForUnlock();
+        for (long delay : UNLOCK_WATCH_DELAYS_MS) {
+            unlockWatch.postDelayed(() -> {
+                // La pantalla puede haberse vuelto a apagar entre medias: el
+                // SCREEN_OFF cancela la vigilancia, pero una comprobación ya
+                // encolada podría colarse igualmente.
+                if (!interactive() || keyguardLocked()) return;
+                userIsBack(System.currentTimeMillis());
+            }, delay);
+        }
+    }
+
+    private void stopWatchingForUnlock() {
+        unlockWatch.removeCallbacksAndMessages(null);
+    }
+
+    /**
+     * Cierra un hueco que no puede estar abierto.
+     *
+     * Con el móvil encendido y desbloqueado delante del usuario, un hueco de
+     * pantalla abierto es una contradicción: significa que la señal de vuelta
+     * se perdió. Lo comprueba el vigilante cada quince minutos, así que aunque
+     * fallen a la vez USER_PRESENT y la vigilancia del cerrojo, lo peor que
+     * pasa es que el borde se redondee a un cuarto de hora —en vez de que la
+     * detección se quede muerta hasta la siguiente reinstalación.
+     */
+    private void healStuckGap(long now) {
+        if (!interactive() || keyguardLocked()) return;
+        if (prefs().getLong(openKey(TRIGGER_SCREEN), 0L) <= 0
+            && prefs().getLong(openKey(TRIGGER_IDLE), 0L) <= 0) return;
+
+        logEvent(this, TRIGGER_SCREEN, "close",
+            "el móvil está desbloqueado con un hueco abierto: se cierra sin esperar a la señal");
+        userIsBack(now);
+    }
+
     /** ¿Está la pantalla encendida? Distingue al usuario del propio sistema. */
     private boolean interactive() {
         PowerManager power = (PowerManager) getSystemService(Context.POWER_SERVICE);
@@ -657,6 +746,11 @@ public class SleepMonitorService extends Service {
 
         if (triggerOn(TRIGGER_SCREEN) && power != null && !interactive()) {
             openGap(TRIGGER_SCREEN, now, false);
+        } else if (triggerOn(TRIGGER_SCREEN) && keyguardLocked()) {
+            // Pantalla encendida y cerrojo puesto al arrancar: el usuario aún
+            // no ha vuelto, y el desbloqueo que viene puede no llegar como
+            // difusión. Se vigila igual que tras un SCREEN_ON.
+            watchForUnlock();
         }
         // Mismo razonamiento para los otros dos disparadores de estado: Doze y
         // «No molestar» son condiciones continuas, no instantes, así que al
@@ -670,10 +764,20 @@ public class SleepMonitorService extends Service {
         }
     }
 
-    /** ¿El dispositivo exige PIN, patrón o biometría para desbloquearse? */
-    private boolean keyguardSecure() {
+    /**
+     * ¿Está el cerrojo puesto ahora mismo?
+     *
+     * Es la pregunta que sustituye a esperar USER_PRESENT, y sustituye también
+     * a la que se hacía antes —`isKeyguardSecure()`, si el móvil exige PIN o
+     * huella—, que describía la configuración del aparato en vez del momento.
+     * Lo que hace falta saber no es si hay cerrojo, sino si está puesto: con la
+     * pantalla encendida y el cerrojo quitado el usuario está delante, venga o
+     * no la difusión del sistema. Y a diferencia de una difusión, esto siempre
+     * se puede preguntar.
+     */
+    private boolean keyguardLocked() {
         KeyguardManager km = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
-        return km != null && km.isKeyguardSecure();
+        return km != null && km.isKeyguardLocked();
     }
 
     /** Añade un hueco de inactividad a la cola que consumirá la capa web. */
