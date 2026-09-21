@@ -88,7 +88,7 @@ function seedState() {
     sessions,
     theme: 'dark',
     lastActiveAt: now - 3600000,
-    pendingSession: null,
+    pendingSessions: [],
     onboarded: true,
   };
 }
@@ -259,17 +259,32 @@ const VARIANTS = [
   { name: 'claro', state: { ...seeded, theme: 'light' } },
   { name: 'onboarding', state: { ...seeded, onboarded: false }, skipTabs: true },
   {
+    // Dos propuestas en cola: se enseña la primera y el punto del icono de
+    // «Datos» avisa de que hay algo que confirmar. Van dos y no una porque la
+    // cola es lo que evita perder noches cuando se acumulan.
     name: 'sesión pendiente',
     state: {
       ...seeded,
-      pendingSession: {
-        id: 'pend-1',
-        start: Date.now() - 9 * 3600000,
-        end: Date.now() - 3600000,
-        source: 'auto',
-        confidence: 'medium',
-        confirmed: false,
-      },
+      pendingSessions: [
+        {
+          id: 'pend-1',
+          start: Date.now() - 33 * 3600000,
+          end: Date.now() - 25 * 3600000,
+          source: 'auto',
+          confidence: 'high',
+          confirmed: false,
+          triggers: ['screen'],
+        },
+        {
+          id: 'pend-2',
+          start: Date.now() - 9 * 3600000,
+          end: Date.now() - 3600000,
+          source: 'auto',
+          confidence: 'medium',
+          confirmed: false,
+          triggers: ['screen', 'idle'],
+        },
+      ],
     },
   },
 ];

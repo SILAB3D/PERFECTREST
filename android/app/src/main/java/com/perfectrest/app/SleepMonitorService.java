@@ -129,6 +129,29 @@ public class SleepMonitorService extends Service {
         return "openAt." + trigger;
     }
 
+    /**
+     * Instante en que cada disparador cerró un hueco por debajo del mínimo, y
+     * el instante en que ese hueco se había abierto.
+     *
+     * Existen para poder deshacer un cierre que resultó no serlo. Una pantalla
+     * que se enciende con una notificación, o un Doze que sale a su ventana de
+     * mantenimiento, cerraban el hueco de la noche a las dos de la mañana y lo
+     * reabrían a los pocos segundos: la noche entera se descartaba en trozos de
+     * hora y media y no quedaba nada que proponer. Si la interrupción dura
+     * menos de {@link #REOPEN_GRACE_MS}, el hueco se reanuda desde donde
+     * estaba en vez de empezar de cero.
+     */
+    public static String shortOpenKey(String trigger) {
+        return "shortOpenAt." + trigger;
+    }
+
+    public static String shortCloseKey(String trigger) {
+        return "shortCloseAt." + trigger;
+    }
+
+    /** Instante del último aviso «has dormido X», para no repetirlo. */
+    public static final String KEY_LAST_SUMMARY_AT = "lastSummaryAt";
+
     /** Alias histórico: el hueco abierto por la pantalla, que el plugin expone. */
     public static final String KEY_SCREEN_OFF_AT = "openAt." + TRIGGER_SCREEN;
 
@@ -146,6 +169,23 @@ public class SleepMonitorService extends Service {
     private static final int MAX_EVENTS = 200;
     /** Cada cuánto comprueba la alarma que el servicio sigue vivo. */
     private static final long WATCHDOG_INTERVAL_MS = 15 * 60_000L;
+    /**
+     * Cuánto puede durar una interrupción sin partir la noche en dos.
+     *
+     * Cubre lo que de verdad interrumpe un sueño sin terminarlo: una ventana
+     * de mantenimiento de Doze (minutos), una notificación que enciende la
+     * pantalla (segundos) o una ida al baño. Pasado ese margen se da por
+     * terminado el hueco, que es lo que debe ocurrir con un despertar real.
+     */
+    private static final long REOPEN_GRACE_MS = 15 * 60_000L;
+    /**
+     * Ventana en la que no se repite el aviso del despertar. Dos disparadores
+     * que cierran la misma mañana describen una noche, no dos.
+     */
+    private static final long SUMMARY_DEDUPE_MS = 6 * 60 * 60_000L;
+
+    /** ¿Ha llegado el servicio a entrar en primer plano en esta vida? */
+    private boolean foregrounded = false;
 
     private BroadcastReceiver receiver;
 
@@ -195,8 +235,14 @@ public class SleepMonitorService extends Service {
         // es la única forma de ver después cuántas veces lo mató el sistema
         // durante la noche, que es la causa más común de no detectar nada.
         if (prefs().getBoolean(KEY_ENABLED, false)) {
-            logEvent(this, null, "service", "detenido por el sistema; se rearma en 5 s");
-            scheduleRestart(this, 5_000L);
+            // Si el servicio ni siquiera llegó a primer plano, reintentar cada
+            // cinco segundos es un bucle que no arregla nada y se come la
+            // batería: lo que falta es un permiso, y eso no cambia en cinco
+            // segundos. Se espacia el reintento al ritmo del vigilante.
+            long delay = foregrounded ? 5_000L : WATCHDOG_INTERVAL_MS;
+            logEvent(this, null, "service",
+                "detenido por el sistema; se rearma en " + formatDuration(delay));
+            scheduleRestart(this, delay);
         } else {
             logEvent(this, null, "service", "detenido por el usuario");
         }
@@ -291,6 +337,7 @@ public class SleepMonitorService extends Service {
             } else {
                 startForeground(NOTIFICATION_ID, buildNotification());
             }
+            foregrounded = true;
             prefs().edit()
                 .putLong(KEY_STARTED_AT, now)
                 .putLong(KEY_ALIVE_AT, now)
@@ -430,6 +477,11 @@ public class SleepMonitorService extends Service {
                 // Desbloqueo real: la señal más fiable de que el usuario ha
                 // vuelto al dispositivo.
                 closeGap(TRIGGER_SCREEN, now, true);
+                // Y con él se cierra también el hueco de Doze. Hace falta
+                // decirlo aquí porque ACTION_DEVICE_IDLE_MODE_CHANGED ya no
+                // cierra nada con la pantalla apagada, y puede llegar antes
+                // que el desbloqueo o no llegar en absoluto.
+                closeGap(TRIGGER_IDLE, now, true);
                 break;
 
             case Intent.ACTION_SCREEN_ON:
@@ -438,7 +490,10 @@ public class SleepMonitorService extends Service {
                 // de vuelta disponible. Con bloqueo seguro se ignora, porque la
                 // pantalla puede encenderse sola por una notificación sin que
                 // el usuario coja el móvil.
-                if (!keyguardSecure()) closeGap(TRIGGER_SCREEN, now, true);
+                if (!keyguardSecure()) {
+                    closeGap(TRIGGER_SCREEN, now, true);
+                    closeGap(TRIGGER_IDLE, now, true);
+                }
                 break;
 
             case Intent.ACTION_POWER_CONNECTED:
@@ -457,8 +512,19 @@ public class SleepMonitorService extends Service {
                 // Es más tardío que SCREEN_OFF —Android tarda en decidirlo—
                 // pero llega aunque no haya bloqueo de pantalla, que es
                 // exactamente el hueco que deja el disparador de pantalla.
-                if (deviceIdle()) openGap(TRIGGER_IDLE, now, false);
-                else closeGap(TRIGGER_IDLE, now, true);
+                if (deviceIdle()) {
+                    openGap(TRIGGER_IDLE, now, false);
+                } else if (interactive()) {
+                    closeGap(TRIGGER_IDLE, now, true);
+                } else {
+                    // Android sale de Doze cada pocas horas para dejar correr
+                    // las tareas pendientes y vuelve a entrar en cuanto
+                    // termina. La pantalla sigue apagada y el usuario sigue
+                    // durmiendo, así que esto no es una vuelta al móvil: era
+                    // lo que partía la noche en trozos de dos o tres horas.
+                    logEvent(this, TRIGGER_IDLE, "discard",
+                        "salida de Doze con la pantalla apagada: ventana de mantenimiento");
+                }
                 break;
 
             case NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED:
@@ -488,11 +554,29 @@ public class SleepMonitorService extends Service {
         // veces en una noche y expulsaría del registro lo que sí importa.
         if (prefs().getLong(key, 0L) > 0) return;
 
-        SharedPreferences.Editor edit = prefs().edit().putLong(key, now);
+        // Si el hueco anterior de este disparador se cerró hace un momento y
+        // era demasiado corto, no era el final de la noche sino una
+        // interrupción: se reanuda desde donde estaba. Sin esto, una noche
+        // entera se descartaba en trozos y no llegaba a proponerse nada.
+        long at = now;
+        long closedAt = prefs().getLong(shortCloseKey(trigger), 0L);
+        long resumeFrom = prefs().getLong(shortOpenKey(trigger), 0L);
+        boolean resumed = closedAt > 0 && resumeFrom > 0 && now - closedAt <= REOPEN_GRACE_MS;
+        if (resumed) at = resumeFrom;
+
+        SharedPreferences.Editor edit = prefs().edit()
+            .putLong(key, at)
+            .remove(shortOpenKey(trigger))
+            .remove(shortCloseKey(trigger));
         if (marksUse) edit.putLong(KEY_LAST_USED, now);
         edit.apply();
 
-        logEvent(this, trigger, "open", null);
+        if (resumed) {
+            logEvent(this, trigger, "open", "se reanuda el hueco de las " + clock(at)
+                + ": la interrupción duró " + formatDuration(now - closedAt));
+        } else {
+            logEvent(this, trigger, "open", null);
+        }
     }
 
     /**
@@ -512,21 +596,34 @@ public class SleepMonitorService extends Service {
         // Sin hueco abierto no hay nada que contar, y anotarlo repetiría una
         // línea por cada desbloqueo: con el bloqueo por deslizamiento,
         // SCREEN_ON ya cerró el hueco cuando llega USER_PRESENT.
+        SharedPreferences.Editor edit = prefs().edit().putLong(key, 0L);
+
         if (openedAt > 0) {
             long elapsed = now - openedAt;
             logEvent(this, trigger, "close", "tras " + formatDuration(elapsed));
             if (elapsed >= minGapMs()) {
                 enqueueGap(openedAt, now, trigger, trigger);
+                edit.remove(shortOpenKey(trigger)).remove(shortCloseKey(trigger));
             } else {
                 logEvent(this, trigger, "discard",
                     formatDuration(elapsed) + " · por debajo del mínimo de "
                         + formatDuration(minGapMs()));
+                // Todavía puede ser una interrupción y no el final: se guarda
+                // el borde para poder reanudarlo si el hueco vuelve a abrirse
+                // enseguida. Lo mira `openGap`.
+                edit.putLong(shortOpenKey(trigger), openedAt)
+                    .putLong(shortCloseKey(trigger), now);
             }
         }
 
-        SharedPreferences.Editor edit = prefs().edit().putLong(key, 0L);
         if (marksUse) edit.putLong(KEY_LAST_USED, now);
         edit.apply();
+    }
+
+    /** ¿Está la pantalla encendida? Distingue al usuario del propio sistema. */
+    private boolean interactive() {
+        PowerManager power = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        return power != null && power.isInteractive();
     }
 
     /** ¿Está el sistema en reposo profundo ahora mismo? */
@@ -558,7 +655,7 @@ public class SleepMonitorService extends Service {
         long now = System.currentTimeMillis();
         PowerManager power = (PowerManager) getSystemService(Context.POWER_SERVICE);
 
-        if (triggerOn(TRIGGER_SCREEN) && power != null && !power.isInteractive()) {
+        if (triggerOn(TRIGGER_SCREEN) && power != null && !interactive()) {
             openGap(TRIGGER_SCREEN, now, false);
         }
         // Mismo razonamiento para los otros dos disparadores de estado: Doze y
@@ -645,6 +742,16 @@ public class SleepMonitorService extends Service {
     private void maybeNotifySummary(long start, long end) {
         if (!prefs().getBoolean(KEY_SUMMARY, false)) return;
         if (!inNightWindow(start) && !inNightWindow(end)) return;
+        // Una misma noche cierra tantos huecos como disparadores activos haya:
+        // la pantalla al desbloquear, el cargador al desenchufar, «no
+        // molestar» al apagarse. Sin esto llegaban dos o tres avisos seguidos
+        // diciendo duraciones distintas de la misma noche.
+        long lastSummaryAt = prefs().getLong(KEY_LAST_SUMMARY_AT, 0L);
+        if (lastSummaryAt > 0 && end - lastSummaryAt < SUMMARY_DEDUPE_MS) {
+            logEvent(this, null, "discard",
+                "aviso omitido: ya se avisó de esta noche a las " + clock(lastSummaryAt));
+            return;
+        }
         if (!canPostNotifications()) {
             recordError("Sin permiso de notificaciones: no se pudo avisar de la noche detectada.");
             return;
@@ -678,6 +785,7 @@ public class SleepMonitorService extends Service {
 
         try {
             manager.notify(SUMMARY_NOTIFICATION_ID, notification);
+            prefs().edit().putLong(KEY_LAST_SUMMARY_AT, end).apply();
         } catch (SecurityException e) {
             recordError("Sin permiso de notificaciones: no se pudo avisar de la noche detectada.");
         }

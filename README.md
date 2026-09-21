@@ -24,7 +24,7 @@ Otros comandos:
 | `npm run dev` | Servidor de desarrollo con recarga en caliente |
 | `npm run build` | Compila a `dist/` (lo que consume el APK) |
 | `npm run typecheck` | Comprueba tipos sin compilar |
-| `npm run check` | Ejecuta las comprobaciones de dominio y de render |
+| `npm run check` | Ejecuta las comprobaciones de dominio, de noches simuladas y de render |
 | `npm run icons` | Regenera los PNG del icono desde `public/logo.svg` |
 | `npm run release` | Compila y firma la APK de release en `release/` |
 | `npm run preview` | Sirve el build de producción |
@@ -128,15 +128,36 @@ El sexto no mide nada: cuando una noche no ha dejado **ninguna** otra señal,
 propone la sesión que marca tu meta para que la corrijas a mano. Va siempre con
 confianza baja y viene desactivado de fábrica.
 
-Cuando dos disparadores caen sobre la misma noche no se proponen dos sesiones:
-se fusionan quedándose con la **intersección** de ambos huecos, porque cada
-señal acota el sueño por fuera —el cargador se enchufa antes de apagar la
-pantalla y se desenchufa después de desbloquear—, y la coincidencia sube el
-nivel de confianza. Toda sesión se puede confirmar, ajustar o descartar:
+**Una noche no llega entera.** Ni el servicio ni la capa web pueden dar por
+buena la primera señal de vuelta que reciben, porque durante la noche llegan
+muchas que no lo son: Android sale de Doze cada pocas horas a su ventana de
+mantenimiento y vuelve a entrar, y con un bloqueo por deslizamiento la pantalla
+se enciende sola con cada notificación. Cada una de esas interrupciones cerraba
+el hueco de la noche y abría otro, así que una noche de siete horas y media
+quedaba troceada en descartes de hora y media y no se proponía nada. Dos
+defensas lo evitan:
+
+- El servicio **no cierra el hueco de Doze con la pantalla apagada** (salir de
+  reposo sin encender la pantalla es el sistema, no el usuario) y **reanuda**
+  cualquier hueco que se cerrara por debajo del mínimo si vuelve a abrirse en
+  los 15 minutos siguientes. Una ida al baño no parte la noche en dos.
+- La capa web **agrupa** los huecos que describen una misma noche —solapados o
+  separados por menos de 45 minutos— en vez de exigir solape estricto.
+
+De cada grupo se toma el borde de la **señal más directa** que contenga: la
+pantalla, que mide el bloqueo real, manda sobre el cargador (que se enchufa
+antes y se desenchufa después) y sobre Doze (que llega tarde y a trozos). La
+coincidencia de varias señales sube el nivel de confianza. Toda sesión se puede
+confirmar, ajustar o descartar:
 
 - **fiable** — empieza y termina dentro de la ventana nocturna y dura entre 4 y 11 h, o dos disparadores independientes coinciden.
 - **estimada** — sólo uno de los dos extremos cae en la ventana nocturna.
 - **dudosa** — demasiado corto, demasiado largo, fuera de horas, o deducido del horario.
+
+Las propuestas se guardan en **cola**, no de una en una: quien pasa un fin de
+semana sin abrir la app vuelve con tres noches que confirmar, y antes la última
+sobrescribía a las anteriores antes de que nadie las viera. Se enseña la
+primera; al resolverla aparece la siguiente.
 
 **El registro de detección.** Los disparadores no fallan con un error: si el
 servicio no arrancó, si Android lo mató de madrugada, si el permiso de alarmas
@@ -175,7 +196,11 @@ silenciar uno sin perder el otro.
 
 Lo emite el servicio nativo y no la capa web a propósito: a las siete de la
 mañana la app lleva horas cerrada y no hay ningún JavaScript vivo que pueda
-avisar. El filtro del servicio es laxo —el umbral mínimo y un extremo dentro de
+avisar. El servicio avisa **una vez por noche**: una misma
+mañana cierra tantos huecos como disparadores activos haya —la pantalla al
+desbloquear, el cargador al desenchufar, «no molestar» al apagarse— y antes
+llegaban dos o tres avisos seguidos diciendo duraciones distintas de la misma
+noche. El filtro del servicio es laxo —el umbral mínimo y un extremo dentro de
 la ventana nocturna—; la evaluación fina (confianza, fusión de disparadores,
 corrección de bordes) sigue estando sólo en la capa web, porque duplicarla en
 Java sólo garantizaría que las dos acaben desincronizadas. La cifra del aviso
@@ -198,14 +223,34 @@ martes 07:10 es «la noche del martes».
 
 ## Comprobaciones
 
-`npm run check` ejecuta dos suites, sin dependencias de testing:
+`npm run check` ejecuta tres suites, sin dependencias de testing:
 
 - **Dominio** ([`scripts/selfcheck.ts`](scripts/selfcheck.ts)) — cálculo de ciclos
   en ambos sentidos, propagación de metas entre modos, ventanas que cruzan
   medianoche, medias circulares, estadísticas y detección de huecos de
   inactividad, y el formato de las etiquetas de release.
+- **Noches simuladas** ([`scripts/nightsim.ts`](scripts/nightsim.ts)) — una noche
+  entera, del evento de Android a la sesión propuesta.
 - **Render** ([`scripts/rendercheck.tsx`](scripts/rendercheck.tsx)) — cada
   pantalla se renderiza fuera del navegador para detectar errores de render.
+
+La suite de noches existe porque las otras entraban por la mitad de la tubería:
+le daban a `evaluateGap` un hueco limpio de 23:30 a 07:00 que se inventaba la
+propia prueba. Una noche real no produce eso, produce media docena de trozos, y
+ahí estaba el fallo. Cada escenario es una ristra de eventos del sistema
+—apagados de pantalla, entradas y salidas de Doze, cargador, «no molestar»,
+muertes del servicio— que recorre un modelo de `SleepMonitorService` y después
+el código real de evaluación y fusión, y se compara el resultado con lo que el
+usuario durmió de verdad. Cubre la noche con ventanas de mantenimiento de Doze,
+la que se pasa sin bloqueo seguro con la pantalla encendiéndose sola, la del
+cargador, la de sólo «no molestar», el servicio muerto y rearmado a mitad y el
+despertar breve de madrugada.
+
+El modelo del servicio es la parte frágil: está en Java y no se puede importar,
+así que se ha reescrito en TypeScript dentro de la suite. Cada regla que debe
+coincidir línea por línea con el Java lleva un comentario `SPEC:` con el nombre
+del método original; si se toca `openGap` o `closeGap` en el servicio, hay que
+tocarlos también aquí o la simulación deja de demostrar nada.
 
 Además, con el servidor de desarrollo en marcha:
 

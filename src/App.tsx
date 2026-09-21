@@ -50,7 +50,9 @@ export default function App() {
     return <Onboarding onDone={() => patch({ onboarded: true })} />;
   }
 
-  const pending = state.pendingSession;
+  // Sólo se enseña la primera de la cola: dos avisos a la vez no se leen, y
+  // al resolverla aparece la siguiente.
+  const pending = state.pendingSessions[0] ?? null;
   const head = TITLES[tab];
 
   return (

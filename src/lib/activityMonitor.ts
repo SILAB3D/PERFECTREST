@@ -7,9 +7,16 @@ import {
   isBackgroundAvailable,
   readGaps,
   readNativeEvents,
+  type NativeGap,
 } from './backgroundMonitor';
 import { discardReason, logEvent, pushEvents } from './triggerLog';
-import { TRIGGERS, TRIGGER_SHORT, sortTriggers, triggerEnabled } from './triggers';
+import {
+  TRIGGERS,
+  TRIGGER_BY_ID,
+  TRIGGER_SHORT,
+  sortTriggers,
+  triggerEnabled,
+} from './triggers';
 import { goalForDate } from './schedule';
 import type {
   Confidence,
@@ -125,44 +132,73 @@ function scoreConfidence(
 }
 
 /**
- * Fusiona las detecciones que se solapan: dos disparadores distintos sobre la
- * misma noche describen un único sueño, no dos.
+ * Fusiona las detecciones que describen una misma noche.
  *
- * Del solape se queda con la **intersección** (el inicio más tardío y el fin
- * más temprano), porque cada señal acota el sueño por fuera: el cargador se
- * enchufa antes de apagar la pantalla y se desenchufa después de desbloquear,
- * así que el tramo en el que todas coinciden es el más cercano al sueño real.
+ * Dos disparadores distintos sobre la misma noche son un único sueño, y un
+ * mismo disparador puede además partir la noche en trozos: Android sale de
+ * Doze en cada ventana de mantenimiento, y una pantalla que se enciende sola
+ * cierra y reabre el hueco. Por eso el agrupado no exige solape estricto, sino
+ * que salva también las interrupciones cortas (`BRIDGE_MS`).
+ *
+ * De cada grupo se toma el borde de la **señal más directa** que contenga.
+ * Antes se tomaba la intersección de todas, y eso resultaba ser justo lo
+ * contrario de lo que conviene: bastaba un fragmento de tres horas de Doze
+ * para recortar una noche de siete y media a ese fragmento, y el resto de la
+ * noche reaparecía como una segunda sesión inventada. Con el criterio de
+ * directividad la pantalla —que mide el bloqueo real— manda sobre el cargador
+ * y sobre Doze, que acotan por fuera o llegan a trozos, y los trozos de la
+ * señal ganadora se unen en un solo tramo.
  */
+const BRIDGE_MS = 45 * MINUTE;
+
+/** Lo directa que es la señal más directa de una detección. */
+function directnessOf(triggers: TriggerId[] | undefined): number {
+  if (!triggers?.length) return 0;
+  return Math.max(...triggers.map((id) => TRIGGER_BY_ID[id].directness));
+}
+
 export function mergeDetections(
   results: DetectionResult[],
   settings: MonitorSettings,
 ): DetectionResult[] {
   const sorted = [...results].sort((a, b) => a.session.start - b.session.start);
-  const merged: DetectionResult[] = [];
+  const clusters: DetectionResult[][] = [];
+  let reach = -Infinity;
 
   for (const result of sorted) {
-    const prev = merged[merged.length - 1];
-    if (!prev || result.session.start >= prev.session.end) {
-      merged.push(result);
-      continue;
+    const current = clusters[clusters.length - 1];
+    if (!current || result.session.start > reach + BRIDGE_MS) {
+      clusters.push([result]);
+      reach = result.session.end;
+    } else {
+      current.push(result);
+      reach = Math.max(reach, result.session.end);
     }
-
-    const start = Math.max(prev.session.start, result.session.start);
-    const end = Math.min(prev.session.end, result.session.end);
-    const triggers = sortTriggers([
-      ...(prev.session.triggers ?? []),
-      ...(result.session.triggers ?? []),
-    ]);
-    // La intersección se vuelve a evaluar desde cero: puede quedarse corta y
-    // dejar de ser plausible, en cuyo caso se conserva el hueco original.
-    const fused = evaluateGap(start, end, settings, triggers);
-    merged[merged.length - 1] = fused ?? {
-      ...prev,
-      session: { ...prev.session, triggers },
-    };
   }
 
-  return merged;
+  return clusters.map((cluster) => fuseCluster(cluster, settings));
+}
+
+function fuseCluster(cluster: DetectionResult[], settings: MonitorSettings): DetectionResult {
+  if (cluster.length === 1) return cluster[0];
+
+  const best = Math.max(...cluster.map((r) => directnessOf(r.session.triggers)));
+  const lead = cluster.filter((r) => directnessOf(r.session.triggers) === best);
+  const start = Math.min(...lead.map((r) => r.session.start));
+  const end = Math.max(...lead.map((r) => r.session.end));
+  const triggers = sortTriggers(cluster.flatMap((r) => r.session.triggers ?? []));
+
+  // Se reevalúa desde cero para que la confianza mire el tramo definitivo y
+  // los disparadores que lo respaldan, no los de un trozo suelto.
+  const fused = evaluateGap(start, end, settings, triggers);
+  if (fused) return fused;
+
+  // Si el tramo resultante ya no fuera plausible se conserva el trozo más
+  // largo, que es la mejor aproximación disponible, en vez de perder la noche.
+  const longest = cluster.reduce((x, y) =>
+    y.session.end - y.session.start > x.session.end - x.session.start ? y : x,
+  );
+  return { ...longest, session: { ...longest.session, triggers } };
 }
 
 /**
@@ -185,6 +221,47 @@ export function refineEdges(session: SleepSession, latencyMinutes: number): Slee
   return { ...session, start, end };
 }
 
+/** Por qué un hueco del servicio no llegó a proponerse. */
+export interface RejectedGap {
+  gap: NativeGap;
+  reason: 'trigger-off' | 'implausible';
+  /** El disparador culpable: el apagado, o el que cerró el hueco. */
+  trigger: TriggerId | null;
+}
+
+/**
+ * Convierte los huecos del servicio en sesiones candidatas.
+ *
+ * Es pura a propósito, separada de la lectura de la cola nativa: es la parte
+ * con lógica de verdad —filtrado por disparador, plausibilidad y fusión— y así
+ * la simulación de una noche completa puede recorrerla tal cual, en vez de
+ * comprobar una maqueta parecida.
+ */
+export function evaluateGaps(
+  gaps: NativeGap[],
+  settings: MonitorSettings,
+): { results: DetectionResult[]; rejected: RejectedGap[] } {
+  const raw: DetectionResult[] = [];
+  const rejected: RejectedGap[] = [];
+
+  for (const gap of gaps) {
+    // Un hueco puede haberse registrado con un disparador que el usuario ha
+    // apagado desde entonces; en ese caso se descarta sin proponerlo.
+    const triggers = [gap.startTrigger, gap.endTrigger].filter(Boolean);
+    const off = triggers.find((id) => !triggerEnabled(settings, id));
+    if (off) {
+      rejected.push({ gap, reason: 'trigger-off', trigger: off });
+      continue;
+    }
+
+    const result = evaluateGap(gap.start, gap.end, settings, triggers);
+    if (result) raw.push(result);
+    else rejected.push({ gap, reason: 'implausible', trigger: gap.endTrigger });
+  }
+
+  return { results: mergeDetections(raw, settings), rejected };
+}
+
 /**
  * Procesa los huecos que el servicio nativo registró con la app cerrada.
  *
@@ -200,37 +277,30 @@ export async function collectNativeGaps(settings: MonitorSettings): Promise<Dete
   const { gaps } = await readGaps();
   if (!gaps.length) return [];
 
-  const results: DetectionResult[] = [];
-  let processedUntil = 0;
+  const processedUntil = gaps.reduce((max, gap) => Math.max(max, gap.end), 0);
+  const { results, rejected } = evaluateGaps(gaps, settings);
 
-  for (const gap of gaps) {
-    processedUntil = Math.max(processedUntil, gap.end);
-    // Un hueco puede haberse registrado con un disparador que el usuario ha
-    // apagado desde entonces; en ese caso se descarta sin proponerlo.
-    const triggers = [gap.startTrigger, gap.endTrigger].filter(Boolean);
-    const off = triggers.find((id) => !triggerEnabled(settings, id));
-    if (off) {
+  for (const item of rejected) {
+    if (item.reason === 'trigger-off' && item.trigger) {
       await logEvent(
-        off,
+        item.trigger,
         'discard',
-        `el disparador «${TRIGGER_SHORT[off]}» se apagó después de registrar el hueco`,
-        gap.end,
+        `el disparador «${TRIGGER_SHORT[item.trigger]}» se apagó después de registrar el hueco`,
+        item.gap.end,
       );
-      continue;
-    }
-
-    const result = evaluateGap(gap.start, gap.end, settings, triggers);
-    if (result) results.push(result);
-    else {
+    } else {
       // Sin esta línea, un hueco que el servicio sí midió pero que la
       // evaluación rechaza —por caer fuera de la ventana nocturna, casi
       // siempre— desaparecía sin dejar rastro, y parecía que el disparador no
       // había llegado a dispararse.
       await logEvent(
-        gap.endTrigger,
+        item.trigger,
         'discard',
-        discardReason(gap.end - gap.start, 'fuera de la ventana nocturna o demasiado corto'),
-        gap.end,
+        discardReason(
+          item.gap.end - item.gap.start,
+          'fuera de la ventana nocturna o demasiado corto',
+        ),
+        item.gap.end,
       );
     }
   }
@@ -238,7 +308,7 @@ export async function collectNativeGaps(settings: MonitorSettings): Promise<Dete
   // Sólo se borra hasta el último hueco leído: si el servicio encoló uno nuevo
   // entre la lectura y el borrado, sobrevive hasta la vuelta siguiente.
   await clearGaps(processedUntil);
-  return mergeDetections(results, settings);
+  return results;
 }
 
 /**

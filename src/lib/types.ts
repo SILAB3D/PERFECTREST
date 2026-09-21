@@ -164,7 +164,17 @@ export interface AppState {
    * `lastActiveAt`, no depende de que la app se abra.
    */
   lastDeviceUseAt: number | null;
-  /** Sesión pendiente de que el usuario la confirme o descarte. */
-  pendingSession: SleepSession | null;
+  /**
+   * Sesiones detectadas a la espera de que el usuario las confirme o las
+   * descarte, de la más antigua a la más reciente.
+   *
+   * Es una cola y no una sola sesión porque una vuelta del monitor puede
+   * proponer varias noches de golpe: quien pasa un fin de semana sin abrir la
+   * app vuelve con tres. Con un único hueco, las dos primeras se perdían sin
+   * dejar rastro —la tercera sobrescribía a las anteriores antes de que
+   * nadie las viera— y el historial quedaba con agujeros que el usuario no
+   * podía ni explicar ni recuperar.
+   */
+  pendingSessions: SleepSession[];
   onboarded: boolean;
 }

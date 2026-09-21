@@ -17,6 +17,7 @@ mkdirSync(outDir, { recursive: true });
 
 const suites = [
   { name: 'dominio', entry: 'scripts/selfcheck.ts' },
+  { name: 'noches', entry: 'scripts/nightsim.ts' },
   { name: 'render', entry: 'scripts/rendercheck.tsx' },
 ];
 

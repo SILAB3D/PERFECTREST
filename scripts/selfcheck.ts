@@ -190,13 +190,30 @@ assert('un disparador ausente cae en su valor por defecto',
   triggerEnabled({ ...mon, triggers: {} as never }, 'screen') === true);
 
 // El cargador acota por fuera (se enchufa antes y se desenchufa después) y la
-// pantalla por dentro: la fusión debe quedarse con el tramo común.
+// pantalla mide el bloqueo real: la fusión debe quedarse con el borde de la
+// pantalla, que es la señal más directa de las dos.
 const byCharger = evaluateGap(at('2026-08-18T22:40:00'), at('2026-08-19T07:40:00'), mon, ['charger'])!;
 const byScreen = evaluateGap(at('2026-08-18T23:20:00'), at('2026-08-19T07:10:00'), mon, ['screen'])!;
 const [fused, ...rest] = mergeDetections([byCharger, byScreen], mon);
 assert('dos disparadores sobre la misma noche dan una sola sesión', rest.length === 0);
-assert('la fusión se queda con la intersección',
-  fused.session.start === byScreen.session.start && fused.session.end === byScreen.session.end);
+assert('la fusión se queda con el borde de la señal más directa',
+  fused.session.start === byScreen.session.start && fused.session.end === byScreen.session.end,
+  [fused.session.start, fused.session.end]);
+
+// Un mismo disparador puede dejar la noche en trozos —Doze sale a su ventana
+// de mantenimiento y vuelve a entrar—, y esos trozos son una noche, no varias.
+const trozo1 = evaluateGap(at('2026-08-18T23:45:00'), at('2026-08-19T03:00:00'), mon, ['idle'])!;
+const trozo2 = evaluateGap(at('2026-08-19T03:10:00'), at('2026-08-19T07:00:00'), mon, ['idle'])!;
+const unida = mergeDetections([trozo1, trozo2], mon);
+assert('dos trozos del mismo disparador se unen en una noche', unida.length === 1, unida.length);
+assert('y la noche abarca de principio a fin',
+  unida[0]?.session.start === trozo1.session.start && unida[0]?.session.end === trozo2.session.end);
+
+// Pero el puente sólo salva interrupciones cortas: dos noches distintas
+// siguen siendo dos.
+const anoche = evaluateGap(at('2026-08-17T23:30:00'), at('2026-08-18T07:00:00'), mon, ['screen'])!;
+const hoy = evaluateGap(at('2026-08-18T23:30:00'), at('2026-08-19T07:00:00'), mon, ['screen'])!;
+assert('dos noches consecutivas no se funden', mergeDetections([anoche, hoy], mon).length === 2);
 assert('y conserva ambos orígenes',
   describeTriggers(fused.session.triggers) === 'pantalla + cargador',
   describeTriggers(fused.session.triggers));
@@ -263,24 +280,22 @@ assert('el reposo se evalúa cuando está activo', triggerEnabled(withIdle, 'idl
 assert('y el interruptor general también lo silencia',
   triggerEnabled({ ...withIdle, enabled: false }, 'idle') === false);
 
-// Doze acota la noche por dentro por los dos lados: el sistema tarda en dar
-// el móvil por quieto (entra después del apagado de pantalla) y sale en
-// cuanto se toca el móvil (antes de que llegue a desbloquearse). Justo por
-// eso la intersección se le acerca más al sueño real que cualquiera de las
-// dos señales por separado.
+// Doze llega tarde y se va pronto: el sistema tarda en dar el móvil por
+// quieto y sale de reposo en cuanto se toca, y además se interrumpe en cada
+// ventana de mantenimiento. Por eso no debe recortar a la pantalla, que mide
+// el bloqueo real: la fusión se queda con el borde de la señal más directa.
 const byIdle = evaluateGap(at('2026-08-18T23:55:00'), at('2026-08-19T07:05:00'), withIdle, ['idle'])!;
 assert('un hueco medido por Doze se detecta igual', byIdle !== null);
 const idlePlusScreen = mergeDetections([byScreen, byIdle], withIdle);
 assert('pantalla y reposo sobre la misma noche dan una sola sesión',
   idlePlusScreen.length === 1, idlePlusScreen.length);
-assert('la intersección toma el inicio más tardío de los dos',
-  idlePlusScreen[0].session.start
-    === Math.max(byScreen.session.start, byIdle.session.start));
-assert('y el fin más temprano de los dos',
-  idlePlusScreen[0].session.end === Math.min(byScreen.session.end, byIdle.session.end));
-assert('así que la fusión nunca dura más que la señal más corta',
+assert('la pantalla manda sobre el reposo por ser más directa',
+  idlePlusScreen[0].session.start === byScreen.session.start
+    && idlePlusScreen[0].session.end === byScreen.session.end,
+  [idlePlusScreen[0].session.start, idlePlusScreen[0].session.end]);
+assert('y la noche no se encoge al fundirse',
   idlePlusScreen[0].session.end - idlePlusScreen[0].session.start
-    <= Math.min(byScreen.gapMs, byIdle.gapMs));
+    >= Math.max(byScreen.gapMs, byIdle.gapMs));
 assert('con los dos orígenes anotados',
   describeTriggers(idlePlusScreen[0].session.triggers) === 'pantalla + reposo',
   describeTriggers(idlePlusScreen[0].session.triggers));

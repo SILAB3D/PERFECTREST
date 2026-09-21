@@ -92,13 +92,21 @@
 .tab[aria-current='page'] { color: var(--primary-soft); }
 :root[data-theme='light'] .tab[aria-current='page'] { color: var(--primary); }
 
-.tab__icon { position: relative; font-size: 1.16rem; line-height: 1; }
+/* El carril lateral es para el punto de sesión pendiente, que va anclado al
+   icono: sin él sobresalía de la caja del glifo. Es simétrico para que el
+   icono siga centrado bajo su etiqueta, esté o no el punto. */
+.tab__icon {
+  position: relative;
+  font-size: 1.16rem;
+  line-height: 1;
+  padding: 0 var(--sp-2);
+}
 
 /* Indicador de sesión pendiente, anclado al icono. */
 .tab__dot {
   position: absolute;
-  top: -2px;
-  right: -6px;
+  top: 0;
+  right: 0;
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -179,8 +187,18 @@
   animation: rise 0.4s var(--ease);
 }
 
-.pending__actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-4); }
-.pending__actions .btn { flex: 1; }
+/* Tres acciones en una fila no caben en 320 px: «Confirmar» es una palabra
+   larga y sin partir, así que el botón no podía encogerse más y se salía por
+   el borde de la tarjeta. Con `wrap` baja a una segunda línea a todo lo ancho
+   —que además es donde mejor está la acción principal— y en las pantallas en
+   las que sí caben los tres siguen repartiéndose la fila a partes iguales. */
+.pending__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+}
+.pending__actions .btn { flex: 1 1 auto; min-width: 0; }
 
 /* --- Selector de día --- */
 .daypicker { display: flex; gap: var(--sp-1); }

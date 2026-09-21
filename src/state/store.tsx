@@ -54,7 +54,7 @@ export const initialState: AppState = {
   theme: 'dark',
   lastActiveAt: null,
   lastDeviceUseAt: null,
-  pendingSession: null,
+  pendingSessions: [],
   onboarded: false,
 };
 
@@ -80,7 +80,7 @@ function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         sessions: [...rest, action.session].sort((a, b) => b.end - a.end),
-        pendingSession: state.pendingSession?.id === action.session.id ? null : state.pendingSession,
+        pendingSessions: state.pendingSessions.filter((s) => s.id !== action.session.id),
       };
     }
 
@@ -88,7 +88,7 @@ function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         sessions: state.sessions.filter((s) => s.id !== action.id),
-        pendingSession: state.pendingSession?.id === action.id ? null : state.pendingSession,
+        pendingSessions: state.pendingSessions.filter((s) => s.id !== action.id),
       };
 
     case 'proposeSession': {
@@ -97,7 +97,15 @@ function reducer(state: AppState, action: Action): AppState {
       const overlaps = state.sessions.some(
         (s) => action.session.start < s.end && s.start < action.session.end,
       );
-      if (overlaps || state.pendingSession?.id === action.session.id) return state;
+      // También se ignora si ya está en la cola o si solapa con algo que ya
+      // espera confirmación: el mismo hueco puede volver a leerse del servicio
+      // antes de que se limpie la cola nativa.
+      const alreadyPending = state.pendingSessions.some(
+        (s) =>
+          s.id === action.session.id ||
+          (action.session.start < s.end && s.start < action.session.end),
+      );
+      if (overlaps || alreadyPending) return state;
 
       if (state.monitor.autoConfirm) {
         return {
@@ -107,11 +115,18 @@ function reducer(state: AppState, action: Action): AppState {
           ),
         };
       }
-      return { ...state, pendingSession: action.session };
+      return {
+        ...state,
+        pendingSessions: [...state.pendingSessions, action.session].sort(
+          (a, b) => a.end - b.end,
+        ),
+      };
     }
 
     case 'dismissPending':
-      return { ...state, pendingSession: null };
+      // Descarta sólo la que el usuario está viendo, que es la primera de la
+      // cola: detrás puede haber otra noche esperando su turno.
+      return { ...state, pendingSessions: state.pendingSessions.slice(1) };
 
     case 'reset':
       return { ...initialState, onboarded: true };
@@ -169,7 +184,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               triggers: { ...DEFAULT_TRIGGERS, ...stored.monitor?.triggers },
             },
             sessions: stored.sessions ?? [],
-            pendingSession: null,
+            // Las propuestas sí sobreviven al cierre de la app. No se pueden
+            // recalcular: la cola del servicio se vacía en cuanto se lee, así
+            // que una noche propuesta y no confirmada antes de cerrar la app
+            // desaparecía para siempre —y desde fuera se veía igual que si la
+            // detección no hubiera funcionado. Sólo se sueltan las que entre
+            // medias hayan quedado cubiertas por una sesión ya guardada.
+            pendingSessions: (stored.pendingSessions ?? []).filter(
+              (pending) =>
+                !(stored.sessions ?? []).some(
+                  (s) => pending.start < s.end && s.start < pending.end,
+                ),
+            ),
           },
         });
       }
@@ -211,8 +237,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       // necesita las metas y el historial y por eso se resuelve aquí.
       onQuiet: (now) => {
         void (async () => {
-          const { schedule, monitor, sessions, pendingSession } = stateRef.current;
-          if (pendingSession) return;
+          const { schedule, monitor, sessions, pendingSessions } = stateRef.current;
+          if (pendingSessions.length) return;
           const proposal = proposeFromSchedule(
             schedule,
             monitor,

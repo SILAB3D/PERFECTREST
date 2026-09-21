@@ -54,7 +54,7 @@ const state = {
   sessions,
   theme: 'dark',
   lastActiveAt: now - 3600000,
-  pendingSession: null,
+  pendingSessions: [],
   onboarded: true,
 };
 
