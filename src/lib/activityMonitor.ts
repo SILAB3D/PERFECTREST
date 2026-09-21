@@ -58,6 +58,18 @@ export interface DetectionResult {
   gapMs: number;
 }
 
+/**
+ * Techo absoluto de lo que puede ser una noche.
+ *
+ * Es distinto de `maxGapMinutes`, que marca lo dudoso: entre ese ajuste y este
+ * techo la sesión se propone con confianza baja, para que el usuario la
+ * corrija. Por encima ya no se propone nada, porque no hay nada que corregir.
+ * Dieciocho horas superan cualquier episodio de sueño creíble, así que un
+ * hueco mayor no habla del sueño sino de la medida: el móvil sin tocar todo un
+ * día, o una señal de vuelta que se perdió y dejó el hueco abierto.
+ */
+export const MAX_PLAUSIBLE_SLEEP_MS = 18 * HOUR;
+
 /** Disparadores que dependen del servicio nativo. */
 export const NATIVE_TRIGGERS: TriggerId[] = TRIGGERS.filter((t) => t.native).map((t) => t.id);
 
@@ -94,6 +106,13 @@ export function evaluateGap(
   const spansNight = gapMs >= 6 * HOUR;
 
   if (!startsAtNight && !endsAtNight && !spansNight) return null;
+  // Por encima del techo no hay noche dudosa que corregir, hay una medición
+  // que falló: el móvil pasó el día en un cajón, o una señal de vuelta se
+  // perdió y el hueco siguió abierto. `maxGapMinutes` no basta para pararlo
+  // —sólo baja la confianza— y con «guardar sin preguntar» activo eso mete
+  // 21 horas de «sueño» en el historial sin que nadie las vea. Hay que
+  // descartarlo aquí: ninguna corrección posterior salva un dato así.
+  if (gapMs > MAX_PLAUSIBLE_SLEEP_MS) return null;
 
   return {
     gapMs,

@@ -628,6 +628,32 @@ assert(
   fus.length === 1 && fus[0].session.triggers,
 );
 
+// Un hueco imposible no es una noche dudosa: no se propone en absoluto.
+// Salió del propio arreglo del disparador de pantalla: al liberarse un hueco
+// que llevaba 21 horas clavado, se guardó como una noche de 21h 7m y la media
+// de siete días pasó a decir «264% de la meta».
+const huecoImposible: NativeGap[] = [
+  { start: t('2026-09-19T00:33:00'), end: t('2026-09-19T22:00:00'), startTrigger: 'screen', endTrigger: 'screen' },
+];
+assert(
+  'un hueco de 21h no llega a proponerse',
+  evaluateGaps(huecoImposible, MON).results.length === 0,
+  evaluateGaps(huecoImposible, MON).results.map((r) => formatDuration(r.gapMs)),
+);
+// Pero la franja dudosa sigue proponiéndose, que es para lo que está: 14h
+// pasa del máximo creíble (13h) y no llega al techo, así que se propone con
+// confianza baja para que el usuario la corrija en vez de descartarla.
+const largaPeroPosible: NativeGap[] = [
+  { start: t('2026-09-18T22:00:00'), end: t('2026-09-19T12:00:00'), startTrigger: 'screen', endTrigger: 'screen' },
+];
+const dudosa = evaluateGaps(largaPeroPosible, MON).results;
+assert('una noche larga pero creíble sí se propone', dudosa.length === 1, dudosa.length);
+assert(
+  'y se marca como dudosa para que se corrija',
+  dudosa.length === 1 && dudosa[0].session.confidence === 'low',
+  dudosa[0]?.session.confidence,
+);
+
 // Dos noches distintas siguen siendo dos: el agrupado salva interrupciones
 // cortas, no días enteros.
 const dosNoches: NativeGap[] = [
