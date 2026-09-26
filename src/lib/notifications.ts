@@ -1,5 +1,6 @@
 import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
+import { notifyNativeSummary } from './backgroundMonitor';
 import { bedtimesForWake, bestOption } from './cycles';
 import { upcomingNight } from './schedule';
 import { MINUTE, formatClock, formatDuration, isoDay } from './time';
@@ -224,6 +225,10 @@ export async function ensureChannel(): Promise<void> {
  * esa hora la app lleva horas cerrada.
  */
 export async function notifySleepSummary(start: number, end: number): Promise<void> {
+  // El aviso nativo es el que emite el servicio de verdad, con el botón
+  // «Comentar»; éste es sólo el sustituto donde no hay plugin.
+  if (await notifyNativeSummary(start, end)) return;
+
   const title = `Has dormido ${formatDuration(end - start)}`;
   const body = `De ${formatClock(start)} a ${formatClock(end)}. Toca para confirmarlo o corregirlo.`;
 

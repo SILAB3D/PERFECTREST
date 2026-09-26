@@ -30,6 +30,7 @@ export function SessionSheet({
   const [start, setStart] = useState(session.start);
   const [end, setEnd] = useState(session.end);
   const [quality, setQuality] = useState(session.quality);
+  const [note, setNote] = useState(session.note ?? '');
 
   const duration = end - start;
   const invalid = duration <= 0;
@@ -42,6 +43,7 @@ export function SessionSheet({
       start,
       end,
       quality,
+      note: note.trim() || undefined,
       confirmed: true,
       source: session.source === 'auto' ? 'edited' : session.source,
     });
@@ -120,6 +122,21 @@ export function SessionSheet({
               </button>
             ))}
           </div>
+        </div>
+
+        <div style={{ marginTop: 'var(--sp-4)' }}>
+          <label className="row__label" htmlFor="session-note" style={{ display: 'block', marginBottom: 'var(--sp-3)' }}>
+            Comentario
+          </label>
+          <textarea
+            id="session-note"
+            className="timefield"
+            rows={3}
+            value={note}
+            placeholder="Me desperté a las cuatro, cené tarde…"
+            onChange={(e) => setNote(e.target.value)}
+            style={{ width: '100%', resize: 'vertical', fontFamily: 'inherit', fontWeight: 400 }}
+          />
         </div>
 
         <div className="pending__actions">
