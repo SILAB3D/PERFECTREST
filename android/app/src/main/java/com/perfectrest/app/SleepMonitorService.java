@@ -21,6 +21,7 @@ import android.os.Looper;
 import android.os.PowerManager;
 
 import androidx.core.app.NotificationCompat;
+import androidx.core.app.RemoteInput;
 import androidx.core.content.ContextCompat;
 
 import org.json.JSONArray;
@@ -161,6 +162,21 @@ public class SleepMonitorService extends Service {
     /** Instante del último aviso «has dormido X», para no repetirlo. */
     public static final String KEY_LAST_SUMMARY_AT = "lastSummaryAt";
 
+    /**
+     * Comentarios escritos desde el aviso «has dormido X», en JSON. Esperan
+     * aquí a que la capa web los adjunte a la sesión: cuando el usuario
+     * contesta, la noche sólo existe como hueco en la cola, todavía no como
+     * sesión.
+     */
+    public static final String KEY_NOTES = "sessionNotes";
+
+    /** Acción del botón «Comentar» del aviso, que atiende {@link SessionNoteReceiver}. */
+    public static final String ACTION_ADD_NOTE = "com.perfectrest.app.ADD_SESSION_NOTE";
+    public static final String EXTRA_START = "start";
+    public static final String EXTRA_END = "end";
+    /** Clave del texto escrito en la respuesta en línea. */
+    public static final String REMOTE_INPUT_NOTE = "note";
+
     /** Alias histórico: el hueco abierto por la pantalla, que el plugin expone. */
     public static final String KEY_SCREEN_OFF_AT = "openAt." + TRIGGER_SCREEN;
 
@@ -171,7 +187,9 @@ public class SleepMonitorService extends Service {
     /** Canal del resumen al despertar: éste sí debe verse y avisar. */
     public static final String SUMMARY_CHANNEL_ID = "perfectrest-summary";
     private static final int NOTIFICATION_ID = 4711;
-    private static final int SUMMARY_NOTIFICATION_ID = 4712;
+    static final int SUMMARY_NOTIFICATION_ID = 4712;
+    /** Tope de comentarios en espera: los que nunca encuentren su noche caducan. */
+    private static final int MAX_NOTES = 30;
     /** Tope de huecos guardados: si la app no se abre en semanas, no crece sin fin. */
     private static final int MAX_GAPS = 60;
     /** Tope del registro de eventos. Cubre varios días sin crecer sin fin. */
@@ -856,7 +874,7 @@ public class SleepMonitorService extends Service {
                 "aviso omitido: ya se avisó de esta noche a las " + clock(lastSummaryAt));
             return;
         }
-        if (!canPostNotifications()) {
+        if (!canPostNotifications(this)) {
             recordError("Sin permiso de notificaciones: no se pudo avisar de la noche detectada.");
             return;
         }
@@ -864,35 +882,114 @@ public class SleepMonitorService extends Service {
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager == null) return;
 
-        String duration = formatDuration(end - start);
+        try {
+            manager.notify(SUMMARY_NOTIFICATION_ID, buildSummary(this, start, end, null));
+            prefs().edit().putLong(KEY_LAST_SUMMARY_AT, end).apply();
+        } catch (SecurityException e) {
+            recordError("Sin permiso de notificaciones: no se pudo avisar de la noche detectada.");
+        }
+    }
 
-        Intent open = new Intent(this, MainActivity.class);
+    /**
+     * El aviso «has dormido X». Es estático porque lo reconstruyen también el
+     * receptor del comentario —para confirmar que se guardó— y el plugin, para
+     * la prueba de Ajustes.
+     *
+     * Con `savedNote` nulo lleva el botón «Comentar», con respuesta en línea:
+     * lo que uno quiere anotar de la noche (me desperté a las cuatro, cené
+     * tarde) se recuerda al despertar y se olvida en cuanto empieza el día,
+     * así que pedirlo después, dentro de la app, era perderlo. Con un
+     * comentario ya guardado, el aviso lo muestra y deja de ofrecer el botón.
+     */
+    static Notification buildSummary(Context context, long start, long end, String savedNote) {
+        Intent open = new Intent(context, MainActivity.class);
         open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
         PendingIntent pending = PendingIntent.getActivity(
-            this, 1, open,
+            context, 1, open,
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
-        String body = "De " + clock(start) + " a " + clock(end)
-            + ". Toca para confirmarlo o corregirlo.";
+        String range = "De " + clock(start) + " a " + clock(end) + ".";
+        String body = savedNote == null
+            ? range + " Toca para confirmarlo o corregirlo."
+            : range + " Comentario guardado: «" + savedNote + "».";
 
-        Notification notification = new NotificationCompat.Builder(this, SUMMARY_CHANNEL_ID)
-            .setContentTitle("Has dormido " + duration)
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(context, SUMMARY_CHANNEL_ID)
+            .setContentTitle("Has dormido " + formatDuration(end - start))
             .setContentText(body)
             .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
             .setSmallIcon(R.drawable.ic_stat_icon)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
             .setAutoCancel(true)
-            .setContentIntent(pending)
+            .setContentIntent(pending);
+
+        if (savedNote == null) {
+            builder.addAction(commentAction(context, start, end));
+        } else {
+            // Al rehacer el aviso tras la respuesta no debe volver a sonar.
+            builder.setOnlyAlertOnce(true);
+        }
+        return builder.build();
+    }
+
+    /** Botón «Comentar» con el campo de texto que Android abre en el propio aviso. */
+    private static NotificationCompat.Action commentAction(Context context, long start, long end) {
+        Intent intent = new Intent(context, SessionNoteReceiver.class);
+        intent.setAction(ACTION_ADD_NOTE);
+        intent.putExtra(EXTRA_START, start);
+        intent.putExtra(EXTRA_END, end);
+
+        // La respuesta en línea exige un PendingIntent mutable: el sistema
+        // escribe el texto en él. Es explícito, así que nadie más puede
+        // rellenarlo.
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) flags |= PendingIntent.FLAG_MUTABLE;
+        PendingIntent reply = PendingIntent.getBroadcast(context, 2, intent, flags);
+
+        RemoteInput input = new RemoteInput.Builder(REMOTE_INPUT_NOTE)
+            .setLabel("Comentario sobre la noche")
             .build();
 
+        return new NotificationCompat.Action.Builder(R.drawable.ic_stat_icon, "Comentar", reply)
+            .addRemoteInput(input)
+            .setAllowGeneratedReplies(false)
+            .build();
+    }
+
+    /**
+     * Guarda un comentario a la espera de su sesión. Lo identifica el
+     * intervalo del hueco: la capa web lo adjunta a la sesión que se solape
+     * con él, que puede tener los bordes algo corregidos.
+     */
+    static void addNote(Context context, long start, long end, String text) {
+        SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        JSONArray notes;
         try {
-            manager.notify(SUMMARY_NOTIFICATION_ID, notification);
-            prefs().edit().putLong(KEY_LAST_SUMMARY_AT, end).apply();
-        } catch (SecurityException e) {
-            recordError("Sin permiso de notificaciones: no se pudo avisar de la noche detectada.");
+            notes = new JSONArray(p.getString(KEY_NOTES, "[]"));
+        } catch (JSONException e) {
+            notes = new JSONArray();
         }
+
+        long now = System.currentTimeMillis();
+        try {
+            JSONObject note = new JSONObject();
+            note.put("id", now);
+            note.put("start", start);
+            note.put("end", end);
+            note.put("note", text);
+            note.put("at", now);
+            notes.put(note);
+        } catch (JSONException e) {
+            return;
+        }
+
+        while (notes.length() > MAX_NOTES) {
+            notes.remove(0);
+        }
+        p.edit().putString(KEY_NOTES, notes.toString()).apply();
+        logEvent(context, null, "service", "comentario añadido desde el aviso a la noche de "
+            + clock(start) + " a " + clock(end));
     }
 
     /** ¿Cae este instante dentro de la ventana nocturna configurada? */
@@ -925,9 +1022,9 @@ public class SleepMonitorService extends Service {
             cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE));
     }
 
-    private boolean canPostNotifications() {
+    static boolean canPostNotifications(Context context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true;
-        return ContextCompat.checkSelfPermission(this, "android.permission.POST_NOTIFICATIONS")
+        return ContextCompat.checkSelfPermission(context, "android.permission.POST_NOTIFICATIONS")
             == PackageManager.PERMISSION_GRANTED;
     }
 

@@ -55,6 +55,13 @@
             </intent-filter>
         </receiver>
 
+        <!-- Botón «Comentar» del aviso al despertar: guarda el texto escrito
+             en la respuesta en línea para adjuntarlo a la noche detectada. -->
+        <receiver
+            android:name=".SessionNoteReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

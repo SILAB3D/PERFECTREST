@@ -23,7 +23,13 @@ import {
 import { DEFAULT_TRIGGERS } from '../lib/triggers';
 import { logEvent } from '../lib/triggerLog';
 import { ensureChannel, rescheduleAll, scheduleForegroundReminders } from '../lib/notifications';
-import { isBackgroundAvailable, startBackground, stopBackground } from '../lib/backgroundMonitor';
+import {
+  isBackgroundAvailable,
+  readNotes,
+  removeNotes,
+  startBackground,
+  stopBackground,
+} from '../lib/backgroundMonitor';
 import { parseTime } from '../lib/time';
 import type { AppState, SleepSession } from '../lib/types';
 
@@ -58,6 +64,9 @@ export const initialState: AppState = {
   onboarded: false,
 };
 
+/** Tiempo que un comentario del aviso espera a su noche antes de soltarse. */
+const NOTE_TTL_MS = 7 * 24 * 3_600_000;
+
 type Action =
   | { type: 'hydrate'; state: AppState }
   | { type: 'patch'; patch: Partial<AppState> }
@@ -65,7 +74,19 @@ type Action =
   | { type: 'removeSession'; id: string }
   | { type: 'proposeSession'; session: SleepSession }
   | { type: 'dismissPending' }
+  | { type: 'addNote'; id: string; note: string }
   | { type: 'reset' };
+
+/**
+ * Suma un comentario al que ya tuviera la sesión en vez de pisarlo. Si ya lo
+ * contiene no hace nada: el mismo comentario puede releerse del servicio
+ * antes de que se borre de su lista.
+ */
+function appendNote(session: SleepSession, note: string): SleepSession {
+  if (!session.note) return { ...session, note };
+  if (session.note.includes(note)) return session;
+  return { ...session, note: `${session.note}\n${note}` };
+}
 
 function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -127,6 +148,15 @@ function reducer(state: AppState, action: Action): AppState {
       // Descarta sólo la que el usuario está viendo, que es la primera de la
       // cola: detrás puede haber otra noche esperando su turno.
       return { ...state, pendingSessions: state.pendingSessions.slice(1) };
+
+    case 'addNote':
+      return {
+        ...state,
+        sessions: state.sessions.map((s) => (s.id === action.id ? appendNote(s, action.note) : s)),
+        pendingSessions: state.pendingSessions.map((s) =>
+          s.id === action.id ? appendNote(s, action.note) : s,
+        ),
+      };
 
     case 'reset':
       return { ...initialState, onboarded: true };
@@ -297,6 +327,39 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     // Depende del objeto entero en vez de campo a campo: volver a arrancar el
     // servicio es idempotente y así ningún ajuste nuevo se queda sin propagar.
   }, [ready, state.monitor]);
+
+  // --- Comentarios desde el aviso al despertar ---
+  // Se escriben cuando la noche sólo es un hueco en la cola del servicio, así
+  // que esperan allí hasta que haya una sesión (propuesta o guardada) que se
+  // solape con su intervalo. Se reintenta cada vez que cambian las sesiones o
+  // la app vuelve a primer plano; los que no encuentran noche en una semana
+  // —un hueco que la evaluación descartó— se sueltan.
+  const applyingNotes = useRef(false);
+  useEffect(() => {
+    if (!ready || applyingNotes.current) return;
+    applyingNotes.current = true;
+    void (async () => {
+      try {
+        const notes = await readNotes();
+        if (!notes.length) return;
+        const { sessions, pendingSessions } = stateRef.current;
+        const candidates = [...pendingSessions, ...sessions];
+        const done: number[] = [];
+        for (const n of notes) {
+          const target = candidates.find((s) => n.start < s.end && s.start < n.end);
+          if (target) {
+            dispatch({ type: 'addNote', id: target.id, note: n.note });
+            done.push(n.id);
+          } else if (Date.now() - n.at > NOTE_TTL_MS) {
+            done.push(n.id);
+          }
+        }
+        await removeNotes(done);
+      } finally {
+        applyingNotes.current = false;
+      }
+    })();
+  }, [ready, state.sessions, state.pendingSessions, state.lastActiveAt]);
 
   // --- Reprogramación de avisos (Módulo 1) ---
   useEffect(() => {

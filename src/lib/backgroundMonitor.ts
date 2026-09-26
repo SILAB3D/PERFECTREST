@@ -23,6 +23,20 @@ export interface NativeGap {
 }
 
 /**
+ * Comentario escrito con el botón «Comentar» del aviso al despertar. Llega
+ * atado al intervalo del hueco, porque cuando se escribe la sesión aún no
+ * existe: se adjunta a la que se solape con él.
+ */
+export interface NativeNote {
+  id: number;
+  start: number;
+  end: number;
+  note: string;
+  /** Cuándo se escribió (epoch ms). */
+  at: number;
+}
+
+/**
  * Estado de todo lo que la detección necesita para funcionar.
  *
  * Va junto a propósito: ninguno de estos permisos falla con un error visible.
@@ -79,6 +93,11 @@ interface SleepMonitorPlugin {
   getGaps(): Promise<{ gaps: NativeGap[]; lastUsedAt: number; screenOffAt: number }>;
   /** Borra los huecos ya procesados; `until` evita perder los recién llegados. */
   clearGaps(options: { until: number }): Promise<void>;
+  /** Comentarios del aviso al despertar que aún no tienen sesión. */
+  getNotes(): Promise<{ notes: NativeNote[] }>;
+  removeNotes(options: { ids: number[] }): Promise<void>;
+  /** Publica el aviso al despertar nativo, con su botón «Comentar». */
+  notifySummary(options: { start: number; end: number }): Promise<void>;
   /** Registro de eventos del servicio, para el diagnóstico de Ajustes. */
   getEvents(): Promise<{ events: TriggerEvent[] }>;
   clearEvents(): Promise<void>;
@@ -250,6 +269,42 @@ export async function clearGaps(until: number): Promise<void> {
     await SleepMonitor.clearGaps({ until });
   } catch {
     /* sin servicio no hay nada que limpiar */
+  }
+}
+
+/** Lee los comentarios escritos desde el aviso al despertar. */
+export async function readNotes(): Promise<NativeNote[]> {
+  if (!isBackgroundAvailable()) return [];
+  try {
+    const { notes } = await SleepMonitor.getNotes();
+    return notes ?? [];
+  } catch {
+    // Una versión anterior del plugin no conoce `getNotes`.
+    return [];
+  }
+}
+
+/** Descarta los comentarios ya adjuntados a su sesión, o caducados. */
+export async function removeNotes(ids: number[]): Promise<void> {
+  if (!isBackgroundAvailable() || !ids.length) return;
+  try {
+    await SleepMonitor.removeNotes({ ids });
+  } catch {
+    /* sin servicio no hay nada que limpiar */
+  }
+}
+
+/**
+ * Publica el aviso al despertar desde el lado nativo. Devuelve false si no
+ * puede, para que quien llama recurra al aviso web, que no lleva el botón.
+ */
+export async function notifyNativeSummary(start: number, end: number): Promise<boolean> {
+  if (!isBackgroundAvailable()) return false;
+  try {
+    await SleepMonitor.notifySummary({ start, end });
+    return true;
+  } catch {
+    return false;
   }
 }
 

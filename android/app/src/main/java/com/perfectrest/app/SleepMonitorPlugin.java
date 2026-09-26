@@ -2,6 +2,7 @@ package com.perfectrest.app;
 
 import android.app.ActivityManager;
 import android.app.AlarmManager;
+import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -27,7 +28,9 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Puente entre la capa web y {@link SleepMonitorService}.
@@ -196,6 +199,75 @@ public class SleepMonitorPlugin extends Plugin {
 
         prefs().edit().putString(SleepMonitorService.KEY_GAPS, kept.toString()).apply();
         call.resolve();
+    }
+
+    /**
+     * Comentarios escritos desde el aviso al despertar, a la espera de que la
+     * web los adjunte a su sesión. Como los huecos, no se borran al leerlos:
+     * lo hace `removeNotes` con los que ya encontraron su noche.
+     */
+    @PluginMethod
+    public void getNotes(PluginCall call) {
+        JSObject ret = new JSObject();
+        try {
+            ret.put("notes", new JSONArray(prefs().getString(SleepMonitorService.KEY_NOTES, "[]")));
+        } catch (JSONException e) {
+            ret.put("notes", new JSONArray());
+        }
+        call.resolve(ret);
+    }
+
+    /** Descarta los comentarios indicados por id, ya adjuntados o caducados. */
+    @PluginMethod
+    public void removeNotes(PluginCall call) {
+        JSArray ids = call.getArray("ids", new JSArray());
+        Set<Long> drop = new HashSet<>();
+        for (int i = 0; i < ids.length(); i++) {
+            drop.add(ids.optLong(i));
+        }
+
+        JSONArray kept = new JSONArray();
+        try {
+            JSONArray current = new JSONArray(prefs().getString(SleepMonitorService.KEY_NOTES, "[]"));
+            for (int i = 0; i < current.length(); i++) {
+                JSONObject note = current.optJSONObject(i);
+                if (note != null && !drop.contains(note.optLong("id"))) kept.put(note);
+            }
+        } catch (JSONException e) {
+            // Lista corrupta: se vacía.
+        }
+
+        prefs().edit().putString(SleepMonitorService.KEY_NOTES, kept.toString()).apply();
+        call.resolve();
+    }
+
+    /**
+     * Publica el aviso al despertar tal cual lo emite el servicio, con su
+     * botón «Comentar». Es la prueba de Ajustes: la versión que montaba la web
+     * no podía llevar la respuesta en línea que atiende el receptor nativo.
+     */
+    @PluginMethod
+    public void notifySummary(PluginCall call) {
+        long start = call.getLong("start", 0L);
+        long end = call.getLong("end", 0L);
+        if (end <= start) {
+            call.reject("Intervalo no válido");
+            return;
+        }
+        NotificationManager manager = getContext().getSystemService(NotificationManager.class);
+        if (manager == null || !SleepMonitorService.canPostNotifications(getContext())) {
+            call.reject("Sin permiso de notificaciones");
+            return;
+        }
+        try {
+            manager.notify(
+                SleepMonitorService.SUMMARY_NOTIFICATION_ID,
+                SleepMonitorService.buildSummary(getContext(), start, end, null)
+            );
+            call.resolve();
+        } catch (SecurityException e) {
+            call.reject("Sin permiso de notificaciones");
+        }
     }
 
     /**
